@@ -1,149 +1,144 @@
-# Chat Application File Structure
+# Chat Application File Structure - Current State
 
-This document outlines the modular architecture of the HIPAA-compliant chat application.
+This document outlines the current state of the HIPAA-compliant chat application after initial migration steps.
 
-## Main Files
+Legend:
+- ✅ COMPLETED: Action has been completed
+- 🟡 PENDING: Still needs to be updated/restructured
+- 🟢 KEPT: Existing file maintained with or without modifications
+
+## Current Structure
 
 /chat
 ├── components/
-│   ├── admin/                          # Admin components (channels, roles, users, etc.)
-│   │   ├── AdminPanel.js               # Main admin panel component that provides administrative functionality for the chat system
-│   │   ├── ChannelManager.js           # Channel management component that provides functionality for administrators to manage channels
-│   │   ├── RoleManager.js              # Role management component that provides functionality for administrators to manage roles
-│   │   ├── UserManager.js              # User management component that provides functionality for administrators to manage users
-│   │   ├── channels/                   # Channel-related components
-│   │   │   ├── ChannelList.js          # Channel list component that displays a list of available channels
-│   │   │   ├── ChannelTable.js         # Channel table component that displays channels in a table format with pagination and actions
-│   │   │   ├── ChannelToolbar.js       # Channel toolbar component that provides search and filtering functionality for channel management
-│   │   │   ├── ChannelView.js          # Channel view component that displays the messages for a selected channel
-│   │   │   ├── CreateChannelModal.js   # Modal component that allows administrators to create new channels
-│   │   │   ├── DeleteChannelModal.js   # Modal component that confirms channel deletion
-│   │   │   └── EditChannelModal.js     # Modal component that allows administrators to edit existing channels
-│   │   ├── roles/                      # Role-related components
-│   │   │   ├── CreateRoleModal.js      # Modal component that allows administrators to create new roles
-│   │   │   ├── DeleteRoleModal.js      # Modal component that confirms role deletion
-│   │   │   ├── EditRoleModal.js        # Modal component that allows administrators to edit existing roles
-│   │   │   ├── PermissionSelector.js   # Permission selection component that allows administrators to select multiple permissions for roles
-│   │   │   ├── RoleTable.js            # Role table component that displays roles in a table format with pagination and actions
-│   │   │   └── RoleToolbar.js          # Role toolbar component that provides search functionality for role management
-│   │   └── users/                      # User-related components
-│   │   │   ├── CreateUserModal.js      # Modal component that allows administrators to create new users
-│   │   │   ├── DeleteUserModal.js      # Modal component that confirms user deletion
-│   │   │   ├── EditUserModal.js        # Modal component that allows administrators to edit existing users
-│   │   │   ├── ImportUsersModal.js     # Modal component that allows administrators to import multiple users from CSV or JSON data
-│   │   │   ├── ResetPasswordModal.js   # Modal component that allows administrators to reset user passwords
-│   │   │   ├── UserTable.js            # User table component that displays users in a table format with pagination and actions
-│   │   │   └── UserToolbar.js          # User toolbar component that provides search and filtering functionality for user management
-│   ├── app/                            # Main application components
-│   │   ├── AppContainer.js             # Main application container (imports view renderers)
-│   │   ├── Header.js                   # Application header component (legacy - consider refactoring or removal)
-│   │   ├── NotificationSystem.js       # Message notification handling
-│   │   ├── appcontainer/               # Modular components folder
-│   │   │   ├── AdminViewRenderer.js    # Handles rendering of the admin view component
-│   │   │   ├── ChatViewRenderer.js     # Handles rendering of the chat view component
-│   │   │   ├── HeaderRenderer.js       # Handles rendering of the custom header component
-│   │   │   ├── index.js                # Barrel file for easy imports
-│   │   │   ├── SettingsViewRenderer.js # Handles rendering of the settings view component
-│   │   │   └── StylesHelper.js         # Common styling utilities
-│   ├── auth/                           # Authentication components
-│   │   ├── AuthContext.js              # Authentication state management
-│   │   └── LoginForm.js                # User login with demo mode
-│   ├── common/                         # Reusable components
-│   │   └── ModalBase.js                # Base modal component
-│   ├── messages/                       # Message-related components
-│   │   ├── MessageInput.js             # Message input component
-│   │   └── MessageList.js              # Message list component
-│   ├── users/                          # User-related components
-│   │   ├── UserList.js                 # User list component
-│   │   └── UserStatus.js               # User status component
+│   ├── admin/                          # Admin components (channels, roles, users, etc.) 🟡 PENDING: Needs updates for new API services
+│   │   ├── AdminPanel.js               # Main admin panel component that provides administrative functionality for the chat system 🟢 KEPT
+│   │   ├── ChannelManager.js           # Channel management component that provides functionality for administrators to manage channels 🟡 PENDING
+│   │   ├── RoleManager.js              # Role management component that provides functionality for administrators to manage roles 🟡 PENDING
+│   │   ├── UserManager.js              # User management component that provides functionality for administrators to manage users 🟡 PENDING
+│   │   ├── channels/                   # Channel-related components 🟡 PENDING: Needs updates for new API
+│   │   │   ├── ChannelList.js          # Channel list component that displays a list of available channels 🟢 KEPT
+│   │   │   ├── ChannelTable.js         # Channel table component that displays channels in a table format with pagination and actions 🟢 KEPT
+│   │   │   ├── ChannelToolbar.js       # Channel toolbar component that provides search and filtering functionality for channel management 🟢 KEPT
+│   │   │   ├── ChannelView.js          # Channel view component that displays the messages for a selected channel 🟢 KEPT
+│   │   │   ├── CreateChannelModal.js   # Modal component that allows administrators to create new channels 🟢 KEPT
+│   │   │   ├── DeleteChannelModal.js   # Modal component that confirms channel deletion 🟢 KEPT
+│   │   │   └── EditChannelModal.js     # Modal component that allows administrators to edit existing channels 🟢 KEPT
+│   │   ├── roles/                      # Role-related components 🟡 PENDING: Needs updates for new API
+│   │   │   ├── CreateRoleModal.js      # Modal component that allows administrators to create new roles 🟢 KEPT
+│   │   │   ├── DeleteRoleModal.js      # Modal component that confirms role deletion 🟢 KEPT
+│   │   │   ├── EditRoleModal.js        # Modal component that allows administrators to edit existing roles 🟢 KEPT
+│   │   │   ├── PermissionSelector.js   # Permission selection component that allows administrators to select multiple permissions for roles 🟢 KEPT
+│   │   │   ├── RoleTable.js            # Role table component that displays roles in a table format with pagination and actions 🟢 KEPT
+│   │   │   └── RoleToolbar.js          # Role toolbar component that provides search functionality for role management 🟢 KEPT
+│   │   └── users/                      # User-related components 🟡 PENDING: Needs updates for new API
+│   │   │   ├── CreateUserModal.js      # Modal component that allows administrators to create new users 🟢 KEPT
+│   │   │   ├── DeleteUserModal.js      # Modal component that confirms user deletion 🟢 KEPT
+│   │   │   ├── EditUserModal.js        # Modal component that allows administrators to edit existing users 🟢 KEPT
+│   │   │   ├── ImportUsersModal.js     # Modal component that allows administrators to import multiple users from CSV or JSON data 🟢 KEPT
+│   │   │   ├── ResetPasswordModal.js   # Modal component that allows administrators to reset user passwords 🟢 KEPT
+│   │   │   ├── UserTable.js            # User table component that displays users in a table format with pagination and actions 🟢 KEPT
+│   │   │   └── UserToolbar.js          # User toolbar component that provides search and filtering functionality for user management 🟢 KEPT
+│   ├── app/                            # Main application components 🟡 PENDING: Needs updates for new service integration
+│   │   ├── AppContainer.js             # Main application container (imports view renderers) 🟡 PENDING
+│   │   ├── Header.js                   # Application header component (legacy - consider refactoring or removal) 🟡 PENDING
+│   │   ├── NotificationSystem.js       # Message notification handling 🟡 PENDING
+│   │   ├── appcontainer/               # Modular components folder 🟡 PENDING: Needs updates for new services
+│   │   │   ├── AdminViewRenderer.js    # Handles rendering of the admin view component 🟡 PENDING
+│   │   │   ├── ChatViewRenderer.js     # Handles rendering of the chat view component 🟡 PENDING
+│   │   │   ├── HeaderRenderer.js       # Handles rendering of the custom header component 🟢 KEPT
+│   │   │   ├── index.js                # Barrel file for easy imports 🟢 KEPT
+│   │   │   ├── SettingsViewRenderer.js # Handles rendering of the settings view component 🟡 PENDING
+│   │   │   └── StylesHelper.js         # Common styling utilities 🟢 KEPT
+│   ├── auth/                           # Authentication components 🟡 PENDING: Needs major updates for JWT
+│   │   ├── AuthContext.js              # Authentication state management 🟡 PENDING
+│   │   └── LoginForm.js                # User login with demo mode 🟡 PENDING
+│   ├── common/                         # Reusable components 🟢 KEPT
+│   │   └── ModalBase.js                # Base modal component 🟢 KEPT
+│   ├── messages/                       # Message-related components 🟡 PENDING: Needs updates for new message service
+│   │   ├── MessageInput.js             # Message input component 🟡 PENDING
+│   │   └── MessageList.js              # Message list component 🟡 PENDING
+│   ├── users/                          # User-related components 🟡 PENDING: Needs updates for new user service
+│   │   ├── UserList.js                 # User list component 🟡 PENDING
+│   │   └── UserStatus.js               # User status component 🟡 PENDING
+├── utils/                              # Partially restructured
+│   ├── encryption.js                   # Message encryption 🟡 PENDING: Needs refactoring for server integration
+│   ├── logger.js                       # HIPAA audit logging 🟡 PENDING: Needs updates for centralized logging
+│   └── validation.js                   # Input validation and PHI detection 🟢 KEPT: Useful for client-side validation
+└── index.js                            # Main entry point 🟡 PENDING: Needs updates to initialize new services
+
+## New Files/Folders Created:
+
+### Config Folder ✅ COMPLETED
+/chat
+├── config/
+│   ├── index.js                        # ✅ COMPLETED: Centralized configuration
+│   ├── environment.js                  # ✅ COMPLETED: Environment-specific configurations
+│   └── routes.js                       # ✅ COMPLETED: API and WebSocket route definitions
+
+### Services Folder (New Structure) ✅ COMPLETED
+/chat
 ├── services/
-│   ├── auth/                           # Authentication and permissions
-│   │   ├── index.js                    # TODO: Investigate and document the purpose of this file
-│   │   ├── authentication.js
-│   │   ├── roles.js
-│   │   ├── permissions.js
-│   │   ├── userOperations.js
-│   │   ├── userImport.js
-│   │   └── sessionManagement.js
-│   ├── channel/                        # Channel management services
-│   │   └── channelService.js
-│   ├── message/                        # Message services
-│   │   └── messageService.js
-│   └── user/                           # User management services
-│   │   └── userService.js
+│   ├── api/                            # ✅ COMPLETED: Centralized API service
+│   │   ├── index.js                    # ✅ COMPLETED: Base API client
+│   │   ├── auth.js                     # ✅ COMPLETED: Authentication endpoints
+│   │   ├── channels.js                 # ✅ COMPLETED: Channel management endpoints
+│   │   ├── messages.js                 # ✅ COMPLETED: Message endpoints
+│   │   └── users.js                    # ✅ COMPLETED: User management endpoints
+│   ├── websocket/                      # ✅ COMPLETED: WebSocket management
+│   │   ├── connection.js               # ✅ COMPLETED: Connection management
+│   │   ├── handlers.js                 # ✅ COMPLETED: Message handlers
+│   │   └── broadcaster.js              # ✅ COMPLETED: Event broadcasting
+│   └── encryption/                     # ✅ COMPLETED: Enhanced encryption
+│       ├── encryption.js               # ✅ COMPLETED: Encryption methods
+│       └── keyManager.js               # ✅ COMPLETED: Key management
+
+### Utils Folder (New Files) ✅ COMPLETED
+/chat
 ├── utils/
-│   ├── encryption.js                   # Message encryption
-│   ├── logger.js                       # HIPAA audit logging
-│   ├── storage.js                      # Local data persistence
-│   └── validation.js                   # Input validation and PHI detection
-└── index.js                            # Main entry point
+│   ├── error-handler.js                # ✅ COMPLETED: Centralized error handling
+│   ├── cache.js                        # ✅ COMPLETED: Minimal caching system
+│   └── validator.js                    # ✅ COMPLETED: Enhanced validation
 
-## Modular Architecture
+### Contexts Folder ✅ COMPLETED
+/chat
+├── contexts/
+│   ├── AuthContext.js                  # ✅ COMPLETED: Authentication context (replacing components/auth/AuthContext.js)
+│   ├── WebSocketContext.js             # ✅ COMPLETED: WebSocket connection context
+│   └── EncryptionContext.js            # ✅ COMPLETED: Encryption context
 
-The application has been restructured to use a modular approach where each major view is handled by a separate renderer component:
+## Next Steps
 
-### Main Container
+Now that we've created the new folder structure and files, the next steps are:
 
-`AppContainer.js` acts as the main orchestrator that:
-- Imports renderers from the `/app` folder
-- Manages application state
-- Determines which view to show based on current state
-- Passes appropriate data and callbacks to each renderer
+1. **Implement Core Service Logic**:
+   - Complete the API service implementation with proper endpoints
+   - Set up the WebSocket connection handling
+   - Implement the JWT authentication flow
+   - Configure the encryption service
 
-### Renderer Components
+2. **Update Components**:
+   - Update components to use the new API services
+   - Modify the message components to use the new WebSocket service
+   - Implement the new authentication flow in auth components
+   - Update admin components to work with the new endpoints
 
-Each renderer is responsible for a specific part of the UI:
+3. **Testing**:
+   - Test each component with the new services
+   - Verify real-time updates via WebSocket
+   - Test authentication flow and token refresh
 
-- `HeaderRenderer.js` - Creates the application header with navigation, user info, and connection status
-- `ChatViewRenderer.js` - Renders the main chat interface with channels, messages, and user list
-- `AdminViewRenderer.js` - Renders the admin panel for user/channel management
-- `SettingsViewRenderer.js` - Renders the settings interface
+4. **Integration**:
+   - Ensure all components work together
+   - Verify proper error handling throughout the application
 
-### Support Components
+## UI Preservation Approach
 
-- `MockDataProvider.js` - Provides sample data for demo mode
-- `StylesHelper.js` - Common styling utilities and constants
-- `index.js` - Barrel file that simplifies imports
+As we implement the new service architecture, we'll keep the UI components and layout largely intact. Each component update will:
 
-## Important Implementation Details
+1. Maintain the same visual appearance and user interactions
+2. Replace service calls with the new API services
+3. Integrate with the new context providers
+4. Use the improved error handling
 
-### Global Functions and Integration Points
-
-- **toggleChatUI Function (CRITICAL)**: 
-  - The `toggleChatVisibility` method in `AppContainer.js` must be explicitly assigned to `window.toggleChatUI` during initialization
-  - This global function is used by the main application header bar to toggle chat visibility
-  - Example: `window.toggleChatUI = this.toggleChatVisibility;`
-  - This assignment MUST be preserved in any refactoring or updates to `AppContainer.js`
-  - Failure to expose this function globally will break the chat button in the header bar
-
-### Demo Mode
-
-The application supports a demo mode that can be accessed by clicking the "Demo" button on the login screen. This mode:
-
-1. Creates a guest user account
-2. Populates the app with sample channels, messages, and users
-3. Allows exploring the UI without requiring a server connection
-
-## Styling Approach
-
-The application uses a consistent styling approach:
-
-- Styles are applied directly to DOM elements using the `applyStyles` helper
-- Common colors and styling utilities are provided by `StylesHelper.js`
-- Each component is responsible for its own styling
-
-## Benefits of the Modular Structure
-
-- **Separation of Concerns**: Each renderer is responsible for only one aspect of the UI
-- **Maintainability**: Smaller files are easier to understand and modify
-- **Scalability**: New features can be added by creating additional renderers
-- **Reusability**: Common utilities can be shared across components
-- **Testing**: Components can be tested in isolation
-
-## Future Improvements
-
-- Further modularization of the renderers into smaller components
-- Add TypeScript for better type checking
-- Implement a proper state management solution
-- Add unit and integration tests
-- Improve accessibility support
+The goal is to preserve the existing user experience while significantly improving the underlying architecture.
