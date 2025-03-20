@@ -1,394 +1,546 @@
 // chat/components/admin/ChannelManager.js
 // Channel management component for HIPAA-compliant chat
 
-import { 
-    getCurrentUser, 
-    hasPermission 
-  } from '../../services/auth';
-  import { getAvailableChannels } from '../../services/channelService.js';
-  import { logChatEvent } from '../../utils/logger.js';
-  import ChannelTable from './channels/ChannelTable.js';
-  import ChannelToolbar from './channels/ChannelToolbar.js';
-  import CreateChannelModal from './channels/CreateChannelModal.js';
-  import EditChannelModal from './channels/EditChannelModal.js';
-  import DeleteChannelModal from './channels/DeleteChannelModal.js';
+import ChannelTable from './channels/ChannelTable.js';
+import ChannelToolbar from './channels/ChannelToolbar.js';
+import CreateChannelModal from './channels/CreateChannelModal.js';
+import EditChannelModal from './channels/EditChannelModal.js';
+import DeleteChannelModal from './channels/DeleteChannelModal.js';
+import authContext from '../../contexts/AuthContext.js';
+import { logChatEvent } from '../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../utils/error-handler.js';
+import { getAllChannels, createChannel, updateChannel, deleteChannel } from '../../services/api/channels.js';
+
+/**
+ * Channel Management Component
+ * Administrative interface for managing chat channels
+ */
+class ChannelManager {
+  /**
+   * Create a new ChannelManager
+   * @param {HTMLElement} container - Container element
+   */
+  constructor(container) {
+    this.container = container;
+    this.state = {
+      channels: [],
+      loading: true,
+      error: null,
+      selectedChannel: null,
+      filter: '',
+      page: 1,
+      pageSize: 10,
+      sortField: 'name',
+      sortDirection: 'asc'
+    };
+    
+    // Component references
+    this.managerElement = null;
+    this.toolbarElement = null;
+    this.tableElement = null;
+    
+    // Sub-component instances
+    this.channelTable = null;
+    this.channelToolbar = null;
+    this.createChannelModal = null;
+    this.editChannelModal = null;
+    this.deleteChannelModal = null;
+    
+    // Bind methods
+    this.render = this.render.bind(this);
+    this.loadChannels = this.loadChannels.bind(this);
+    this.handleCreateChannel = this.handleCreateChannel.bind(this);
+    this.handleEditChannel = this.handleEditChannel.bind(this);
+    this.handleDeleteChannel = this.handleDeleteChannel.bind(this);
+    this.handleChannelSelect = this.handleChannelSelect.bind(this);
+    this.handleFilter = this.handleFilter.bind(this);
+    this.handleSort = this.handleSort.bind(this);
+    this.handlePageChange = this.handlePageChange.bind(this);
+    
+    // Initialize
+    this.initialize();
+  }
   
   /**
-   * Channel Manager Component
-   * Provides channel management functionality for administrators
+   * Initialize the component
    */
-  class ChannelManager {
-    /**
-     * Create a new ChannelManager
-     * @param {HTMLElement} container - The container element
-     */
-    constructor(container) {
-      this.container = container;
-      this.channelManagerElement = null;
-      this.channels = [];
-      this.isLoading = false;
+  initialize() {
+    try {
+      // Check permissions
+      if (!authContext.hasPermission('channel.read')) {
+        throw new Error('Permission denied: Cannot access channel management');
+      }
       
-      // Filter state
-      this.searchTerm = '';
-      this.typeFilter = 'all';
-      this.currentPage = 1;
-      this.pageSize = 10;
-      
-      // Sub-components
-      this.channelTable = null;
-      this.channelToolbar = null;
-      
-      // Bind methods
-      this.render = this.render.bind(this);
-      this.loadChannels = this.loadChannels.bind(this);
-      this.handleSearch = this.handleSearch.bind(this);
-      this.handleTypeFilter = this.handleTypeFilter.bind(this);
-      this.handlePageChange = this.handlePageChange.bind(this);
-      this.showCreateChannelModal = this.showCreateChannelModal.bind(this);
-      this.showEditChannelModal = this.showEditChannelModal.bind(this);
-      this.showDeleteChannelModal = this.showDeleteChannelModal.bind(this);
-      
-      // Initialize
-      this.initialize();
-    }
-    
-    /**
-     * Initialize the channel manager
-     */
-    initialize() {
       // Create container element
-      this.channelManagerElement = document.createElement('div');
-      this.channelManagerElement.className = 'channel-manager';
-      this.applyStyles(this.channelManagerElement, {
+      this.managerElement = document.createElement('div');
+      this.managerElement.className = 'channel-manager';
+      this.applyStyles(this.managerElement, {
         display: 'flex',
         flexDirection: 'column',
-        width: '100%',
         height: '100%',
-        overflow: 'hidden',
-        backgroundColor: '#f8f9fa'
+        padding: '16px',
+        boxSizing: 'border-box'
       });
       
-      // Add to container
+      // Create toolbar container
+      this.toolbarElement = document.createElement('div');
+      this.toolbarElement.className = 'channel-manager-toolbar-container';
+      
+      // Create table container
+      this.tableElement = document.createElement('div');
+      this.tableElement.className = 'channel-manager-table-container';
+      this.applyStyles(this.tableElement, {
+        flex: '1',
+        overflowY: 'auto',
+        marginTop: '16px'
+      });
+      
+      // Add elements to container
+      this.managerElement.appendChild(this.toolbarElement);
+      this.managerElement.appendChild(this.tableElement);
+      
       if (this.container) {
-        this.container.appendChild(this.channelManagerElement);
+        this.container.appendChild(this.managerElement);
       }
+      
+      // Create toolbar component
+      this.channelToolbar = new ChannelToolbar(this.toolbarElement, {
+        onCreateChannel: this.handleCreateChannel,
+        onEditChannel: () => {
+          if (this.state.selectedChannel) {
+            this.handleEditChannel(this.state.selectedChannel);
+          } else {
+            alert('Please select a channel to edit');
+          }
+        },
+        onDeleteChannel: () => {
+          if (this.state.selectedChannel) {
+            this.handleDeleteChannel(this.state.selectedChannel);
+          } else {
+            alert('Please select a channel to delete');
+          }
+        },
+        onFilter: this.handleFilter,
+        canCreate: authContext.hasPermission('channel.create'),
+        canEdit: authContext.hasPermission('channel.update'),
+        canDelete: authContext.hasPermission('channel.delete')
+      });
+      
+      // Create table component
+      this.channelTable = new ChannelTable(this.tableElement, {
+        channels: [],
+        loading: true,
+        onSelect: this.handleChannelSelect,
+        onSort: this.handleSort,
+        onPageChange: this.handlePageChange,
+        pageSize: this.state.pageSize,
+        currentPage: this.state.page,
+        totalItems: 0,
+        sortField: this.state.sortField,
+        sortDirection: this.state.sortDirection
+      });
+      
+      // Create modals
+      this.createChannelModal = new CreateChannelModal({
+        onSubmit: async (channelData) => {
+          try {
+            const result = await createChannel(channelData);
+            
+            if (result.success) {
+              logChatEvent('admin', 'Channel created', {
+                channelName: channelData.name
+              });
+              
+              this.loadChannels();
+              return true;
+            } else {
+              throw new Error(result.error || 'Failed to create channel');
+            }
+          } catch (error) {
+            handleError(error, {
+              code: ErrorCode.API_REQUEST_FAILED,
+              category: ErrorCategory.DATA,
+              source: 'ChannelManager',
+              message: 'Failed to create channel'
+            });
+            
+            return false;
+          }
+        }
+      });
+      
+      this.editChannelModal = new EditChannelModal({
+        onSubmit: async (channelId, updates) => {
+          try {
+            const result = await updateChannel(channelId, updates);
+            
+            if (result.success) {
+              logChatEvent('admin', 'Channel updated', {
+                channelId,
+                channelName: updates.name
+              });
+              
+              this.loadChannels();
+              return true;
+            } else {
+              throw new Error(result.error || 'Failed to update channel');
+            }
+          } catch (error) {
+            handleError(error, {
+              code: ErrorCode.API_REQUEST_FAILED,
+              category: ErrorCategory.DATA,
+              source: 'ChannelManager',
+              message: 'Failed to update channel'
+            });
+            
+            return false;
+          }
+        }
+      });
+      
+      this.deleteChannelModal = new DeleteChannelModal({
+        onSubmit: async (channelId) => {
+          try {
+            const result = await deleteChannel(channelId);
+            
+            if (result.success) {
+              logChatEvent('admin', 'Channel deleted', {
+                channelId
+              });
+              
+              // Reset selected channel if it was deleted
+              if (this.state.selectedChannel && this.state.selectedChannel.id === channelId) {
+                this.setState({ selectedChannel: null });
+              }
+              
+              this.loadChannels();
+              return true;
+            } else {
+              throw new Error(result.error || 'Failed to delete channel');
+            }
+          } catch (error) {
+            handleError(error, {
+              code: ErrorCode.API_REQUEST_FAILED,
+              category: ErrorCategory.DATA,
+              source: 'ChannelManager',
+              message: 'Failed to delete channel'
+            });
+            
+            return false;
+          }
+        }
+      });
       
       // Load channels
       this.loadChannels();
       
       // Log initialization
       logChatEvent('admin', 'Channel manager initialized');
-    }
-    
-    /**
-     * Load channels from the server
-     */
-    async loadChannels() {
-      try {
-        this.isLoading = true;
-        this.render(); // Show loading state
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.INITIALIZATION_FAILED,
+        category: ErrorCategory.SYSTEM,
+        source: 'ChannelManager',
+        message: 'Failed to initialize channel manager'
+      });
+      
+      // Display error in container
+      if (this.container) {
+        this.container.innerHTML = '';
         
-        // Get channels from service
-        this.channels = getAvailableChannels();
-        console.log('[CRM Extension] Loaded channels:', this.channels.length);
+        const errorElement = document.createElement('div');
+        errorElement.className = 'channel-manager-error';
+        this.applyStyles(errorElement, {
+          padding: '16px',
+          color: '#f44336',
+          textAlign: 'center'
+        });
         
-        this.isLoading = false;
-        this.render();
-      } catch (error) {
-        console.error('[CRM Extension] Error loading channels:', error);
-        this.isLoading = false;
-        this.channels = [];
-        this.render();
+        errorElement.textContent = 'Error: ' + (error.message || 'Failed to initialize channel manager');
+        
+        this.container.appendChild(errorElement);
       }
     }
+  }
+  
+  /**
+   * Update component state
+   * @param {Object} newState - New state to merge
+   */
+  setState(newState) {
+    this.state = { ...this.state, ...newState };
+    this.render();
+  }
+  
+  /**
+   * Load channels from API
+   */
+  async loadChannels() {
+    try {
+      this.setState({ loading: true, error: null });
+      
+      // Calculate pagination
+      const start = (this.state.page - 1) * this.state.pageSize;
+      const end = start + this.state.pageSize;
+      
+      // Get all channels
+      const result = await getAllChannels({
+        filter: this.state.filter,
+        sort: this.state.sortField,
+        direction: this.state.sortDirection
+      });
+      
+      if (result.success) {
+        // Apply filter if present
+        let filteredChannels = result.data.channels;
+        if (this.state.filter) {
+          const filterLower = this.state.filter.toLowerCase();
+          filteredChannels = filteredChannels.filter(channel => 
+            channel.name.toLowerCase().includes(filterLower) ||
+            (channel.description && channel.description.toLowerCase().includes(filterLower))
+          );
+        }
+        
+        // Get total count and paginated subset
+        const totalItems = filteredChannels.length;
+        const paginatedChannels = filteredChannels.slice(start, end);
+        
+        this.setState({
+          channels: paginatedChannels,
+          loading: false,
+          totalItems
+        });
+      } else {
+        throw new Error(result.message || 'Failed to load channels');
+      }
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.DATA_NOT_FOUND,
+        category: ErrorCategory.DATA,
+        source: 'ChannelManager',
+        message: 'Failed to load channels'
+      });
+      
+      this.setState({
+        loading: false,
+        error: error.message || 'Failed to load channels'
+      });
+    }
+  }
+  
+  /**
+   * Handle channel creation
+   */
+  handleCreateChannel() {
+    if (this.createChannelModal) {
+      this.createChannelModal.show();
+    }
+  }
+  
+  /**
+   * Handle channel editing
+   * @param {Object} channel - Channel to edit
+   */
+  handleEditChannel(channel) {
+    if (this.editChannelModal) {
+      this.editChannelModal.setChannel(channel);
+      this.editChannelModal.show();
+    }
+  }
+  
+  /**
+   * Handle channel deletion
+   * @param {Object} channel - Channel to delete
+   */
+  handleDeleteChannel(channel) {
+    if (this.deleteChannelModal) {
+      this.deleteChannelModal.setChannel(channel);
+      this.deleteChannelModal.show();
+    }
+  }
+  
+  /**
+   * Handle channel selection
+   * @param {Object} channel - Selected channel
+   */
+  handleChannelSelect(channel) {
+    this.setState({ selectedChannel: channel });
     
-    /**
-     * Render the channel manager
-     */
-    render() {
-      if (!this.channelManagerElement) return;
-      
-      // Clear existing content
-      this.channelManagerElement.innerHTML = '';
-      
-      // Check permissions
-      const currentUser = getCurrentUser();
-      const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.role === 'moderator');
-      
-      if (!isAdmin) {
-        this.renderAccessDenied();
-        return;
+    // Update toolbar state
+    if (this.channelToolbar) {
+      this.channelToolbar.updateChannelSelection(channel);
+    }
+  }
+  
+  /**
+   * Handle filter change
+   * @param {string} filter - New filter value
+   */
+  handleFilter(filter) {
+    this.setState({ filter, page: 1 }, () => {
+      this.loadChannels();
+    });
+  }
+  
+  /**
+   * Handle sort change
+   * @param {string} field - Field to sort by
+   */
+  handleSort(field) {
+    // Toggle direction if same field, otherwise default to ascending
+    const sortDirection = field === this.state.sortField && this.state.sortDirection === 'asc' ? 
+      'desc' : 'asc';
+    
+    this.setState({ sortField: field, sortDirection }, () => {
+      this.loadChannels();
+    });
+  }
+  
+  /**
+   * Handle page change
+   * @param {number} page - New page number
+   */
+  handlePageChange(page) {
+    this.setState({ page }, () => {
+      this.loadChannels();
+    });
+  }
+  
+  /**
+   * Render the component
+   */
+  render() {
+    // Update table with new data
+    if (this.channelTable) {
+      this.channelTable.update({
+        channels: this.state.channels,
+        loading: this.state.loading,
+        pageSize: this.state.pageSize,
+        currentPage: this.state.page,
+        totalItems: this.state.totalItems,
+        sortField: this.state.sortField,
+        sortDirection: this.state.sortDirection,
+        selectedChannelId: this.state.selectedChannel ? this.state.selectedChannel.id : null
+      });
+    }
+    
+    // Show error if present
+    if (this.state.error && this.tableElement) {
+      // Clear existing error
+      const existingError = this.tableElement.querySelector('.channel-manager-error');
+      if (existingError) {
+        existingError.remove();
       }
       
-      // Create header
-      const header = document.createElement('div');
-      header.className = 'channel-manager-header';
-      this.applyStyles(header, {
-        marginBottom: '20px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start'
+      // Create error element
+      const errorElement = document.createElement('div');
+      errorElement.className = 'channel-manager-error';
+      this.applyStyles(errorElement, {
+        padding: '16px',
+        marginTop: '16px',
+        backgroundColor: '#ffebee',
+        color: '#f44336',
+        borderRadius: '4px',
+        textAlign: 'center'
       });
       
-      const titleBlock = document.createElement('div');
+      errorElement.textContent = 'Error: ' + this.state.error;
       
-      const title = document.createElement('h3');
-      title.textContent = 'Channel Management';
-      this.applyStyles(title, {
-        margin: '0 0 8px 0',
-        fontSize: '20px',
-        fontWeight: 'bold'
-      });
-      
-      const subtitle = document.createElement('p');
-      subtitle.textContent = `${this.channels.length} channels available`;
-      this.applyStyles(subtitle, {
-        margin: '0',
-        color: '#6c757d',
-        fontSize: '14px'
-      });
-      
-      titleBlock.appendChild(title);
-      titleBlock.appendChild(subtitle);
-      
-      // Action buttons
-      const actionButtons = document.createElement('div');
-      this.applyStyles(actionButtons, {
-        display: 'flex',
-        gap: '10px'
-      });
-      
-      // Create channel button
-      const createButton = document.createElement('button');
-      createButton.textContent = 'Create Channel';
-      this.applyStyles(createButton, {
-        padding: '8px 16px',
-        backgroundColor: '#28a745',
+      // Add refresh button
+      const refreshButton = document.createElement('button');
+      refreshButton.textContent = 'Try Again';
+      this.applyStyles(refreshButton, {
+        marginLeft: '16px',
+        padding: '4px 8px',
+        backgroundColor: '#f44336',
         color: 'white',
         border: 'none',
         borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        display: 'flex',
-        alignItems: 'center'
+        cursor: 'pointer'
       });
       
-      createButton.addEventListener('click', this.showCreateChannelModal);
-      
-      const createIcon = document.createElement('span');
-      createIcon.textContent = '➕';
-      this.applyStyles(createIcon, {
-        marginRight: '5px'
+      refreshButton.addEventListener('click', () => {
+        this.loadChannels();
       });
       
-      createButton.prepend(createIcon);
-      actionButtons.appendChild(createButton);
-      
-      header.appendChild(titleBlock);
-      header.appendChild(actionButtons);
-      this.channelManagerElement.appendChild(header);
-      
-      // Create and render toolbar (search + filters)
-      this.channelToolbar = new ChannelToolbar({
-        searchTerm: this.searchTerm,
-        typeFilter: this.typeFilter,
-        onSearch: this.handleSearch,
-        onTypeFilterChange: this.handleTypeFilter,
-        onRefresh: this.loadChannels
-      });
-      
-      this.channelManagerElement.appendChild(this.channelToolbar.render());
-      
-      // Show loading state or render channel table
-      if (this.isLoading) {
-        const loadingElement = document.createElement('div');
-        this.applyStyles(loadingElement, {
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '50px',
-          color: '#6c757d'
-        });
-        
-        loadingElement.textContent = 'Loading channels...';
-        this.channelManagerElement.appendChild(loadingElement);
-      } else {
-        // Filter channels
-        const filteredChannels = this.filterChannels();
-        
-        // Create and render channel table
-        this.channelTable = new ChannelTable({
-          channels: filteredChannels,
-          currentPage: this.currentPage,
-          pageSize: this.pageSize,
-          onPageChange: this.handlePageChange,
-          onEditChannel: this.showEditChannelModal,
-          onDeleteChannel: this.showDeleteChannelModal
-        });
-        
-        this.channelManagerElement.appendChild(this.channelTable.render());
+      errorElement.appendChild(refreshButton);
+      this.tableElement.appendChild(errorElement);
+    }
+  }
+  
+  /**
+   * Apply CSS styles to an element
+   * @param {HTMLElement} element - Element to style
+   * @param {Object} styles - Styles to apply
+   */
+  applyStyles(element, styles) {
+    Object.assign(element.style, styles);
+  }
+  
+  /**
+   * Refresh channels
+   */
+  refresh() {
+    this.loadChannels();
+  }
+  
+  /**
+   * Set filter value
+   * @param {string} filter - Filter value
+   */
+  setFilter(filter) {
+    this.setState({ filter, page: 1 }, () => {
+      this.loadChannels();
+    });
+  }
+  
+  /**
+   * Get currently selected channel
+   * @returns {Object|null} Selected channel
+   */
+  getSelectedChannel() {
+    return this.state.selectedChannel;
+  }
+  
+  /**
+   * Cleanup resources
+   */
+  destroy() {
+    try {
+      // Destroy modals
+      if (this.createChannelModal) {
+        this.createChannelModal.destroy();
       }
       
-      return this.channelManagerElement;
-    }
-    
-    /**
-     * Filter channels based on search term and type filter
-     * @returns {Array} Filtered channels
-     */
-    filterChannels() {
-      return this.channels.filter(channel => {
-        // Apply search filter
-        const matchesSearch = this.searchTerm === '' || 
-          (channel.name && channel.name.toLowerCase().includes(this.searchTerm.toLowerCase())) ||
-          (channel.description && channel.description.toLowerCase().includes(this.searchTerm.toLowerCase()));
-        
-        // Apply type filter
-        const matchesType = this.typeFilter === 'all' || channel.type === this.typeFilter;
-        
-        return matchesSearch && matchesType;
-      });
-    }
-    
-    /**
-     * Render access denied message
-     */
-    renderAccessDenied() {
-      this.channelManagerElement.innerHTML = '';
-      
-      const accessDenied = document.createElement('div');
-      this.applyStyles(accessDenied, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100%',
-        padding: '20px',
-        textAlign: 'center',
-        color: '#721c24',
-        backgroundColor: '#f8d7da'
-      });
-      
-      const iconElement = document.createElement('div');
-      iconElement.innerHTML = '⛔';
-      this.applyStyles(iconElement, {
-        fontSize: '48px',
-        marginBottom: '16px'
-      });
-      
-      const titleElement = document.createElement('h3');
-      titleElement.textContent = 'Access Denied';
-      this.applyStyles(titleElement, {
-        margin: '0 0 10px 0',
-        fontSize: '24px'
-      });
-      
-      const messageElement = document.createElement('p');
-      messageElement.textContent = 'Administrator or moderator privileges are required to access Channel Management.';
-      
-      accessDenied.appendChild(iconElement);
-      accessDenied.appendChild(titleElement);
-      accessDenied.appendChild(messageElement);
-      
-      this.channelManagerElement.appendChild(accessDenied);
-      
-      // Log access attempt
-      logChatEvent('admin', 'Access denied to channel management');
-    }
-    
-    /**
-     * Handle search input
-     * @param {string} searchTerm - Search term
-     */
-    handleSearch(searchTerm) {
-      this.searchTerm = searchTerm;
-      this.currentPage = 1; // Reset to first page
-      this.render();
-    }
-    
-    /**
-     * Handle type filter change
-     * @param {string} type - Type to filter by
-     */
-    handleTypeFilter(type) {
-      this.typeFilter = type;
-      this.currentPage = 1; // Reset to first page
-      this.render();
-    }
-    
-    /**
-     * Handle page change
-     * @param {number} page - New page number
-     */
-    handlePageChange(page) {
-      this.currentPage = page;
-      this.render();
-    }
-    
-    /**
-     * Show create channel modal
-     */
-    showCreateChannelModal() {
-      const modal = new CreateChannelModal({
-        onSuccess: () => this.loadChannels()
-      });
-      modal.show();
-    }
-    
-    /**
-     * Show edit channel modal
-     * @param {Object} channel - Channel to edit
-     */
-    showEditChannelModal(channel) {
-      const modal = new EditChannelModal({
-        channel,
-        onSuccess: () => this.loadChannels()
-      });
-      modal.show();
-    }
-    
-    /**
-     * Show delete channel modal
-     * @param {Object} channel - Channel to delete
-     */
-    showDeleteChannelModal(channel) {
-      const modal = new DeleteChannelModal({
-        channel,
-        onSuccess: () => this.loadChannels()
-      });
-      modal.show();
-    }
-    
-    /**
-     * Apply CSS styles to an element
-     * @param {HTMLElement} element - Element to style
-     * @param {Object} styles - Styles to apply
-     */
-    applyStyles(element, styles) {
-      Object.assign(element.style, styles);
-    }
-    
-    /**
-     * Destroy the component
-     */
-    destroy() {
-      // Remove from DOM
-      if (this.channelManagerElement && this.channelManagerElement.parentNode) {
-        this.channelManagerElement.parentNode.removeChild(this.channelManagerElement);
+      if (this.editChannelModal) {
+        this.editChannelModal.destroy();
       }
       
-      // Cleanup subcomponents
+      if (this.deleteChannelModal) {
+        this.deleteChannelModal.destroy();
+      }
+      
+      // Destroy table
       if (this.channelTable) {
         this.channelTable.destroy();
       }
       
+      // Destroy toolbar
       if (this.channelToolbar) {
         this.channelToolbar.destroy();
       }
       
+      // Remove from DOM
+      if (this.managerElement && this.managerElement.parentNode) {
+        this.managerElement.parentNode.removeChild(this.managerElement);
+      }
+      
       // Log destruction
       logChatEvent('admin', 'Channel manager destroyed');
+    } catch (error) {
+      console.error('[ChannelManager] Error during destruction:', error);
     }
   }
-  
-  export default ChannelManager;
+}
+
+export default ChannelManager;
