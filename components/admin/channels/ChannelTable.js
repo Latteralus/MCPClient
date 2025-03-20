@@ -1,430 +1,657 @@
 // chat/components/admin/channels/ChannelTable.js
-// Channel table component for displaying and interacting with channels
+// Channel table component for HIPAA-compliant chat administration
 
-import { getCurrentUser } from '../../../services/auth';
+import authContext from '../../../contexts/AuthContext.js';
+import { logChatEvent } from '../../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../../utils/error-handler.js';
 
 /**
  * Channel Table Component
- * Displays channels in a table with pagination and actions
+ * Displays a table of channels with sorting and pagination
  */
 class ChannelTable {
   /**
    * Create a new ChannelTable
+   * @param {HTMLElement} container - Container element
    * @param {Object} options - Table options
-   * @param {Array} options.channels - Channels to display
-   * @param {number} options.currentPage - Current page number
+   * @param {Array} options.channels - Channel data
+   * @param {boolean} options.loading - Loading state
+   * @param {Function} options.onSelect - Selection handler
+   * @param {Function} options.onSort - Sort handler
+   * @param {Function} options.onPageChange - Page change handler
    * @param {number} options.pageSize - Items per page
-   * @param {Function} options.onPageChange - Page change callback
-   * @param {Function} options.onEditChannel - Edit channel callback
-   * @param {Function} options.onDeleteChannel - Delete channel callback
+   * @param {number} options.currentPage - Current page
+   * @param {number} options.totalItems - Total number of items
+   * @param {string} options.sortField - Current sort field
+   * @param {string} options.sortDirection - Current sort direction
+   * @param {string} options.selectedChannelId - Currently selected channel ID
    */
-  constructor(options = {}) {
+  constructor(container, options = {}) {
+    this.container = container;
     this.options = {
       channels: [],
-      currentPage: 1,
-      pageSize: 10,
+      loading: false,
+      onSelect: () => {},
+      onSort: () => {},
       onPageChange: () => {},
-      onEditChannel: () => {},
-      onDeleteChannel: () => {},
+      pageSize: 10,
+      currentPage: 1,
+      totalItems: 0,
+      sortField: 'name',
+      sortDirection: 'asc',
+      selectedChannelId: null,
       ...options
     };
     
-    this.tableContainer = null;
+    // DOM elements
+    this.tableElement = null;
+    this.tableBodyElement = null;
+    this.loadingElement = null;
+    this.paginationElement = null;
+    
+    // State
+    this.lastSelectedRow = null;
     
     // Bind methods
     this.render = this.render.bind(this);
-    this.createActionButton = this.createActionButton.bind(this);
-    this.formatDateTime = this.formatDateTime.bind(this);
+    this.renderTable = this.renderTable.bind(this);
+    this.renderTableHeader = this.renderTableHeader.bind(this);
+    this.renderTableBody = this.renderTableBody.bind(this);
+    this.renderPagination = this.renderPagination.bind(this);
+    this.handleHeaderClick = this.handleHeaderClick.bind(this);
+    this.handleRowClick = this.handleRowClick.bind(this);
+    this.handlePageClick = this.handlePageClick.bind(this);
+    
+    // Initialize
+    this.initialize();
   }
   
   /**
-   * Render the channel table
-   * @returns {HTMLElement} The rendered table container
+   * Initialize the component
+   */
+  initialize() {
+    try {
+      // Create table container
+      this.tableElement = document.createElement('div');
+      this.tableElement.className = 'channel-table-container';
+      this.applyStyles(this.tableElement, {
+        width: '100%',
+        backgroundColor: 'white',
+        borderRadius: '4px',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+        overflow: 'hidden'
+      });
+      
+      // Add to container
+      if (this.container) {
+        this.container.appendChild(this.tableElement);
+      }
+      
+      // Create loading element
+      this.loadingElement = document.createElement('div');
+      this.loadingElement.className = 'channel-table-loading';
+      this.applyStyles(this.loadingElement, {
+        padding: '32px',
+        textAlign: 'center',
+        color: '#666',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: 'bold',
+        zIndex: '1',
+        display: this.options.loading ? 'flex' : 'none'
+      });
+      
+      // Create loading spinner
+      const spinner = document.createElement('div');
+      spinner.className = 'loading-spinner';
+      this.applyStyles(spinner, {
+        borderRadius: '50%',
+        width: '24px',
+        height: '24px',
+        border: '3px solid rgba(0, 0, 0, 0.1)',
+        borderTopColor: '#2196F3',
+        animation: 'spin 1s linear infinite',
+        marginRight: '12px'
+      });
+      
+      // Add keyframes for animation
+      if (!document.getElementById('spinner-style')) {
+        const style = document.createElement('style');
+        style.id = 'spinner-style';
+        style.textContent = `
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+      
+      this.loadingElement.appendChild(spinner);
+      this.loadingElement.appendChild(document.createTextNode('Loading channels...'));
+      
+      // Create pagination container
+      this.paginationElement = document.createElement('div');
+      this.paginationElement.className = 'channel-table-pagination';
+      this.applyStyles(this.paginationElement, {
+        padding: '12px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        backgroundColor: '#f5f5f5',
+        borderTop: '1px solid #e0e0e0'
+      });
+      
+      // Render initial state
+      this.render();
+      
+      // Log initialization
+      logChatEvent('ui', 'Channel table initialized');
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.COMPONENT_FAILED,
+        category: ErrorCategory.UI,
+        source: 'ChannelTable',
+        message: 'Failed to initialize channel table'
+      });
+      
+      // Show error in container
+      if (this.container) {
+        this.container.innerHTML = `
+          <div style="padding: 16px; color: #f44336; text-align: center;">
+            Error initializing channel table: ${error.message || 'Unknown error'}
+          </div>
+        `;
+      }
+    }
+  }
+  
+  /**
+   * Render the component
    */
   render() {
-    // Calculate pagination
-    const totalChannels = this.options.channels.length;
-    const totalPages = Math.ceil(totalChannels / this.options.pageSize);
-    const startIndex = (this.options.currentPage - 1) * this.options.pageSize;
-    const endIndex = Math.min(startIndex + this.options.pageSize, totalChannels);
-    const paginatedChannels = this.options.channels.slice(startIndex, endIndex);
+    if (!this.tableElement) return;
     
-    // Create table container
-    this.tableContainer = document.createElement('div');
-    this.applyStyles(this.tableContainer, {
-      backgroundColor: '#ffffff',
-      border: '1px solid #dee2e6',
-      borderRadius: '4px',
-      overflow: 'hidden',
-      marginBottom: '15px'
-    });
+    // Clear table
+    this.tableElement.innerHTML = '';
     
-    // Create table
+    // Update loading state
+    this.loadingElement.style.display = this.options.loading ? 'flex' : 'none';
+    
+    // Render table or empty state
+    if (this.options.channels.length === 0 && !this.options.loading) {
+      this.renderEmptyState();
+    } else {
+      this.renderTable();
+    }
+    
+    // Add loading overlay
+    this.tableElement.appendChild(this.loadingElement);
+  }
+  
+  /**
+   * Render the table
+   */
+  renderTable() {
     const table = document.createElement('table');
+    table.className = 'channel-table';
     this.applyStyles(table, {
       width: '100%',
       borderCollapse: 'collapse',
-      fontSize: '14px'
+      backgroundColor: 'white'
     });
     
-    // Table header
+    // Create table header
     const thead = document.createElement('thead');
-    this.applyStyles(thead, {
-      backgroundColor: '#f8f9fa',
-      fontWeight: 'bold'
+    thead.appendChild(this.renderTableHeader());
+    table.appendChild(thead);
+    
+    // Create table body
+    const tbody = document.createElement('tbody');
+    this.tableBodyElement = tbody;
+    this.renderTableBody();
+    table.appendChild(tbody);
+    
+    // Add table
+    this.tableElement.appendChild(table);
+    
+    // Render pagination
+    this.renderPagination();
+    this.tableElement.appendChild(this.paginationElement);
+  }
+  
+  /**
+   * Render table header
+   * @returns {HTMLElement} Header row element
+   */
+  renderTableHeader() {
+    const headerRow = document.createElement('tr');
+    this.applyStyles(headerRow, {
+      backgroundColor: '#f9f9f9',
+      borderBottom: '1px solid #e0e0e0'
     });
     
-    const headerRow = document.createElement('tr');
+    // Define header columns with sort fields
+    const columns = [
+      { label: 'Name', field: 'name', width: '25%' },
+      { label: 'Description', field: 'description', width: '35%' },
+      { label: 'Members', field: 'memberCount', width: '10%' },
+      { label: 'Created', field: 'createdAt', width: '15%' },
+      { label: 'Public', field: 'isPublic', width: '15%' }
+    ];
     
-    const headers = ['Name', 'Description', 'Type', 'Members', 'Created', 'Actions'];
-    
-    headers.forEach(headerText => {
+    // Create header cells
+    columns.forEach(column => {
       const th = document.createElement('th');
-      th.textContent = headerText;
       this.applyStyles(th, {
-        padding: '12px 15px',
         textAlign: 'left',
-        borderBottom: '2px solid #dee2e6'
+        padding: '12px 16px',
+        fontWeight: 'bold',
+        color: '#333',
+        fontSize: '14px',
+        cursor: 'pointer',
+        userSelect: 'none',
+        width: column.width
       });
+      
+      // Create sort indicator
+      const isSorted = this.options.sortField === column.field;
+      
+      // Cell content wrapper for flex layout
+      const contentWrapper = document.createElement('div');
+      this.applyStyles(contentWrapper, {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between'
+      });
+      
+      contentWrapper.textContent = column.label;
+      
+      if (isSorted) {
+        const sortIndicator = document.createElement('span');
+        sortIndicator.textContent = this.options.sortDirection === 'asc' ? '↑' : '↓';
+        this.applyStyles(sortIndicator, {
+          marginLeft: '4px',
+          fontSize: '12px'
+        });
+        
+        contentWrapper.appendChild(sortIndicator);
+        
+        // Highlight sorted column
+        th.style.backgroundColor = '#e3f2fd';
+      }
+      
+      th.appendChild(contentWrapper);
+      
+      // Add click handler for sorting
+      th.addEventListener('click', () => this.handleHeaderClick(column.field));
       
       headerRow.appendChild(th);
     });
     
-    thead.appendChild(headerRow);
-    table.appendChild(thead);
-    
-    // Table body
-    const tbody = document.createElement('tbody');
-    
-    if (paginatedChannels.length === 0) {
-      // No channels found
-      const noChannelsRow = document.createElement('tr');
-      
-      const noChannelsCell = document.createElement('td');
-      noChannelsCell.textContent = 'No channels found matching the criteria.';
-      this.applyStyles(noChannelsCell, {
-        padding: '20px 15px',
-        textAlign: 'center',
-        color: '#6c757d'
-      });
-      noChannelsCell.colSpan = headers.length;
-      
-      noChannelsRow.appendChild(noChannelsCell);
-      tbody.appendChild(noChannelsRow);
-    } else {
-      // Add channel rows
-      paginatedChannels.forEach(channel => {
-        const row = document.createElement('tr');
-        
-        // Add hover effect
-        row.addEventListener('mouseover', () => {
-          row.style.backgroundColor = '#f8f9fa';
-        });
-        
-        row.addEventListener('mouseout', () => {
-          row.style.backgroundColor = '';
-        });
-        
-        // Name cell
-        const nameCell = document.createElement('td');
-        nameCell.textContent = channel.name;
-        this.applyStyles(nameCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6',
-          fontWeight: 'bold'
-        });
-        
-        // Description cell
-        const descriptionCell = document.createElement('td');
-        descriptionCell.textContent = channel.description || '-';
-        this.applyStyles(descriptionCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6'
-        });
-        
-        // Type cell
-        const typeCell = document.createElement('td');
-        
-        const typeBadge = document.createElement('span');
-        typeBadge.textContent = channel.type || 'public';
-        
-        // Style based on type
-        let badgeColor = '#28a745'; // Green for public
-        
-        if (channel.type === 'private') {
-          badgeColor = '#ffc107'; // Yellow for private
-        }
-        
-        this.applyStyles(typeBadge, {
-          backgroundColor: badgeColor,
-          color: 'white',
-          padding: '3px 8px',
-          borderRadius: '12px',
-          fontSize: '12px',
-          fontWeight: 'bold',
-          textTransform: 'uppercase'
-        });
-        
-        typeCell.appendChild(typeBadge);
-        this.applyStyles(typeCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6'
-        });
-        
-        // Members cell
-        const membersCell = document.createElement('td');
-        const memberCount = (channel.members && Array.isArray(channel.members)) ? channel.members.length : 0;
-        membersCell.textContent = memberCount;
-        this.applyStyles(membersCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6'
-        });
-        
-        // Created cell
-        const createdCell = document.createElement('td');
-        createdCell.textContent = this.formatDateTime(channel.createdAt);
-        this.applyStyles(createdCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6',
-          fontSize: '12px',
-          color: '#6c757d'
-        });
-        
-        // Actions cell
-        const actionsCell = document.createElement('td');
-        this.applyStyles(actionsCell, {
-          padding: '12px 15px',
-          borderBottom: '1px solid #dee2e6'
-        });
-        
-        const actionsContainer = document.createElement('div');
-        this.applyStyles(actionsContainer, {
-          display: 'flex',
-          gap: '5px'
-        });
-        
-        // Edit button
-        const editButton = this.createActionButton('Edit', '✏️', () => {
-          this.options.onEditChannel(channel);
-        });
-        
-        // Delete button
-        const deleteButton = this.createActionButton('Delete', '🗑️', () => {
-          this.options.onDeleteChannel(channel);
-        });
-        
-        // Don't allow deleting default channels
-        if (channel.id !== 'general' && channel.id !== 'announcements') {
-          actionsContainer.appendChild(editButton);
-          actionsContainer.appendChild(deleteButton);
-        } else {
-          // Just edit for default channels
-          actionsContainer.appendChild(editButton);
-          
-          const systemNote = document.createElement('span');
-          systemNote.textContent = '(system channel)';
-          this.applyStyles(systemNote, {
-            color: '#6c757d',
-            fontSize: '12px',
-            marginLeft: '10px'
-          });
-          
-          actionsContainer.appendChild(systemNote);
-        }
-        
-        actionsCell.appendChild(actionsContainer);
-        
-        // Add cells to row
-        row.appendChild(nameCell);
-        row.appendChild(descriptionCell);
-        row.appendChild(typeCell);
-        row.appendChild(membersCell);
-        row.appendChild(createdCell);
-        row.appendChild(actionsCell);
-        
-        tbody.appendChild(row);
-      });
-    }
-    
-    table.appendChild(tbody);
-    this.tableContainer.appendChild(table);
-    
-    // Add pagination controls if needed
-    if (totalChannels > 0) {
-      const paginationControls = document.createElement('div');
-      this.applyStyles(paginationControls, {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '10px 15px',
-        backgroundColor: '#f8f9fa',
-        borderTop: '1px solid #dee2e6'
-      });
-      
-      // Results info
-      const resultsInfo = document.createElement('div');
-      resultsInfo.textContent = `Showing ${startIndex + 1}-${endIndex} of ${totalChannels} channels`;
-      this.applyStyles(resultsInfo, {
-        fontSize: '14px',
-        color: '#6c757d'
-      });
-      
-      // Page controls
-      const pageControls = document.createElement('div');
-      this.applyStyles(pageControls, {
-        display: 'flex',
-        gap: '5px',
-        alignItems: 'center'
-      });
-      
-      // First page button
-      const firstButton = document.createElement('button');
-      firstButton.textContent = '⟨⟨';
-      firstButton.title = 'First Page';
-      this.applyStyles(firstButton, {
-        padding: '5px 10px',
-        border: '1px solid #dee2e6',
-        borderRadius: '4px',
-        backgroundColor: 'white',
-        cursor: this.options.currentPage > 1 ? 'pointer' : 'default',
-        opacity: this.options.currentPage > 1 ? '1' : '0.5'
-      });
-      
-      firstButton.disabled = this.options.currentPage <= 1;
-      firstButton.addEventListener('click', () => {
-        if (this.options.currentPage > 1) {
-          this.options.onPageChange(1);
-        }
-      });
-      
-      // Previous page button
-      const prevButton = document.createElement('button');
-      prevButton.textContent = '⟨';
-      prevButton.title = 'Previous Page';
-      this.applyStyles(prevButton, {
-        padding: '5px 10px',
-        border: '1px solid #dee2e6',
-        borderRadius: '4px',
-        backgroundColor: 'white',
-        cursor: this.options.currentPage > 1 ? 'pointer' : 'default',
-        opacity: this.options.currentPage > 1 ? '1' : '0.5'
-      });
-      
-      prevButton.disabled = this.options.currentPage <= 1;
-      prevButton.addEventListener('click', () => {
-        if (this.options.currentPage > 1) {
-          this.options.onPageChange(this.options.currentPage - 1);
-        }
-      });
-      
-      // Page indicator
-      const pageIndicator = document.createElement('span');
-      pageIndicator.textContent = `Page ${this.options.currentPage} of ${totalPages || 1}`;
-      this.applyStyles(pageIndicator, {
-        padding: '0 10px',
-        fontSize: '14px'
-      });
-      
-      // Next page button
-      const nextButton = document.createElement('button');
-      nextButton.textContent = '⟩';
-      nextButton.title = 'Next Page';
-      this.applyStyles(nextButton, {
-        padding: '5px 10px',
-        border: '1px solid #dee2e6',
-        borderRadius: '4px',
-        backgroundColor: 'white',
-        cursor: this.options.currentPage < totalPages ? 'pointer' : 'default',
-        opacity: this.options.currentPage < totalPages ? '1' : '0.5'
-      });
-      
-      nextButton.disabled = this.options.currentPage >= totalPages;
-      nextButton.addEventListener('click', () => {
-        if (this.options.currentPage < totalPages) {
-          this.options.onPageChange(this.options.currentPage + 1);
-        }
-      });
-      
-      // Last page button
-      const lastButton = document.createElement('button');
-      lastButton.textContent = '⟩⟩';
-      lastButton.title = 'Last Page';
-      this.applyStyles(lastButton, {
-        padding: '5px 10px',
-        border: '1px solid #dee2e6',
-        borderRadius: '4px',
-        backgroundColor: 'white',
-        cursor: this.options.currentPage < totalPages ? 'pointer' : 'default',
-        opacity: this.options.currentPage < totalPages ? '1' : '0.5'
-      });
-      
-      lastButton.disabled = this.options.currentPage >= totalPages;
-      lastButton.addEventListener('click', () => {
-        if (this.options.currentPage < totalPages) {
-          this.options.onPageChange(totalPages);
-        }
-      });
-      
-      // Add all controls
-      pageControls.appendChild(firstButton);
-      pageControls.appendChild(prevButton);
-      pageControls.appendChild(pageIndicator);
-      pageControls.appendChild(nextButton);
-      pageControls.appendChild(lastButton);
-      
-      paginationControls.appendChild(resultsInfo);
-      paginationControls.appendChild(pageControls);
-      
-      this.tableContainer.appendChild(paginationControls);
-    }
-    
-    return this.tableContainer;
+    return headerRow;
   }
   
   /**
-   * Create an action button for channel actions
-   * @param {string} title - Button title
-   * @param {string} icon - Button icon
-   * @param {Function} onClick - Click handler
-   * @returns {HTMLElement} Button element
+   * Render table body rows
    */
-  createActionButton(title, icon, onClick) {
-    const button = document.createElement('button');
-    button.title = title;
-    button.innerHTML = icon;
+  renderTableBody() {
+    if (!this.tableBodyElement) return;
     
-    this.applyStyles(button, {
-      width: '28px',
-      height: '28px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      border: '1px solid #dee2e6',
-      borderRadius: '4px',
-      backgroundColor: 'white',
+    // Clear existing rows
+    this.tableBodyElement.innerHTML = '';
+    
+    // Add rows for each channel
+    this.options.channels.forEach(channel => {
+      const row = this.createChannelRow(channel);
+      this.tableBodyElement.appendChild(row);
+    });
+  }
+  
+  /**
+   * Create a row for a channel
+   * @param {Object} channel - Channel data
+   * @returns {HTMLElement} Row element
+   */
+  createChannelRow(channel) {
+    const row = document.createElement('tr');
+    row.className = 'channel-table-row';
+    row.setAttribute('data-channel-id', channel.id);
+    
+    // Check if selected
+    const isSelected = channel.id === this.options.selectedChannelId;
+    
+    // Base styles
+    this.applyStyles(row, {
+      borderBottom: '1px solid #e0e0e0',
       cursor: 'pointer',
-      fontSize: '12px'
+      backgroundColor: isSelected ? '#e3f2fd' : 'transparent',
+      transition: 'background-color 0.2s'
     });
     
-    button.addEventListener('click', onClick);
+    // Hover effect
+    row.addEventListener('mouseover', () => {
+      if (!isSelected) {
+        row.style.backgroundColor = '#f5f5f5';
+      }
+    });
     
-    return button;
+    row.addEventListener('mouseout', () => {
+      if (!isSelected) {
+        row.style.backgroundColor = 'transparent';
+      }
+    });
+    
+    // Add cells
+    
+    // Name cell
+    const nameCell = document.createElement('td');
+    this.applyStyles(nameCell, {
+      padding: '12px 16px',
+      fontSize: '14px'
+    });
+    
+    // Create name wrapper with icon
+    const nameWrapper = document.createElement('div');
+    this.applyStyles(nameWrapper, {
+      display: 'flex',
+      alignItems: 'center'
+    });
+    
+    // Channel icon (locked or public)
+    const iconSpan = document.createElement('span');
+    iconSpan.textContent = channel.isPublic ? '🌐' : '🔒';
+    this.applyStyles(iconSpan, {
+      marginRight: '8px',
+      fontSize: '16px'
+    });
+    
+    // Channel name
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = channel.name;
+    this.applyStyles(nameSpan, {
+      fontWeight: isSelected ? 'bold' : 'normal'
+    });
+    
+    nameWrapper.appendChild(iconSpan);
+    nameWrapper.appendChild(nameSpan);
+    nameCell.appendChild(nameWrapper);
+    
+    // Description cell
+    const descriptionCell = document.createElement('td');
+    this.applyStyles(descriptionCell, {
+      padding: '12px 16px',
+      fontSize: '14px',
+      color: channel.description ? '#333' : '#999',
+      fontStyle: channel.description ? 'normal' : 'italic'
+    });
+    descriptionCell.textContent = channel.description || 'No description';
+    
+    // Members cell
+    const membersCell = document.createElement('td');
+    this.applyStyles(membersCell, {
+      padding: '12px 16px',
+      fontSize: '14px',
+      textAlign: 'center'
+    });
+    membersCell.textContent = channel.memberCount || '0';
+    
+    // Created date cell
+    const createdCell = document.createElement('td');
+    this.applyStyles(createdCell, {
+      padding: '12px 16px',
+      fontSize: '14px'
+    });
+    
+    // Format date
+    const createdDate = new Date(channel.createdAt);
+    createdCell.textContent = createdDate.toLocaleDateString();
+    
+    // Public status cell
+    const publicCell = document.createElement('td');
+    this.applyStyles(publicCell, {
+      padding: '12px 16px',
+      fontSize: '14px'
+    });
+    
+    // Create status badge
+    const statusBadge = document.createElement('span');
+    statusBadge.textContent = channel.isPublic ? 'Public' : 'Private';
+    this.applyStyles(statusBadge, {
+      display: 'inline-block',
+      padding: '4px 8px',
+      borderRadius: '12px',
+      fontSize: '12px',
+      fontWeight: 'bold',
+      backgroundColor: channel.isPublic ? '#e8f5e9' : '#fff3e0',
+      color: channel.isPublic ? '#2e7d32' : '#e65100'
+    });
+    
+    publicCell.appendChild(statusBadge);
+    
+    // Add cells to row
+    row.appendChild(nameCell);
+    row.appendChild(descriptionCell);
+    row.appendChild(membersCell);
+    row.appendChild(createdCell);
+    row.appendChild(publicCell);
+    
+    // Add click handler
+    row.addEventListener('click', () => this.handleRowClick(channel));
+    
+    return row;
   }
   
   /**
-   * Format a date and time for display
-   * @param {string} dateString - ISO date string
-   * @returns {string} Formatted date and time
+   * Render pagination controls
    */
-  formatDateTime(dateString) {
-    if (!dateString) return 'N/A';
+  renderPagination() {
+    if (!this.paginationElement) return;
     
-    try {
-      const date = new Date(dateString);
-      return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-    } catch (error) {
-      return dateString;
+    // Clear existing content
+    this.paginationElement.innerHTML = '';
+    
+    // Create info text
+    const infoText = document.createElement('div');
+    infoText.className = 'pagination-info';
+    
+    // Calculate page info
+    const totalPages = Math.ceil(this.options.totalItems / this.options.pageSize);
+    const start = (this.options.currentPage - 1) * this.options.pageSize + 1;
+    const end = Math.min(start + this.options.pageSize - 1, this.options.totalItems);
+    
+    infoText.textContent = `Showing ${start}-${end} of ${this.options.totalItems} channels`;
+    
+    // Create pagination controls
+    const controls = document.createElement('div');
+    controls.className = 'pagination-controls';
+    this.applyStyles(controls, {
+      display: 'flex',
+      alignItems: 'center'
+    });
+    
+    // Previous page button
+    const prevButton = document.createElement('button');
+    prevButton.textContent = '← Previous';
+    prevButton.disabled = this.options.currentPage <= 1;
+    this.applyStyles(prevButton, {
+      padding: '6px 12px',
+      border: '1px solid #ddd',
+      backgroundColor: 'white',
+      borderRadius: '4px',
+      marginRight: '8px',
+      cursor: this.options.currentPage <= 1 ? 'not-allowed' : 'pointer',
+      opacity: this.options.currentPage <= 1 ? '0.6' : '1'
+    });
+    
+    if (!prevButton.disabled) {
+      prevButton.addEventListener('click', () => this.handlePageClick(this.options.currentPage - 1));
     }
+    
+    // Next page button
+    const nextButton = document.createElement('button');
+    nextButton.textContent = 'Next →';
+    nextButton.disabled = this.options.currentPage >= totalPages;
+    this.applyStyles(nextButton, {
+      padding: '6px 12px',
+      border: '1px solid #ddd',
+      backgroundColor: 'white',
+      borderRadius: '4px',
+      cursor: this.options.currentPage >= totalPages ? 'not-allowed' : 'pointer',
+      opacity: this.options.currentPage >= totalPages ? '0.6' : '1'
+    });
+    
+    if (!nextButton.disabled) {
+      nextButton.addEventListener('click', () => this.handlePageClick(this.options.currentPage + 1));
+    }
+    
+    // Page indicator
+    const pageIndicator = document.createElement('span');
+    pageIndicator.textContent = `Page ${this.options.currentPage} of ${totalPages || 1}`;
+    this.applyStyles(pageIndicator, {
+      margin: '0 12px',
+      fontSize: '14px'
+    });
+    
+    // Add controls
+    controls.appendChild(prevButton);
+    controls.appendChild(pageIndicator);
+    controls.appendChild(nextButton);
+    
+    // Add to pagination element
+    this.paginationElement.appendChild(infoText);
+    this.paginationElement.appendChild(controls);
+  }
+  
+  /**
+   * Render empty state when no channels
+   */
+  renderEmptyState() {
+    const emptyState = document.createElement('div');
+    emptyState.className = 'channel-table-empty';
+    this.applyStyles(emptyState, {
+      padding: '32px',
+      textAlign: 'center',
+      color: '#666',
+      backgroundColor: 'white'
+    });
+    
+    // Icon
+    const icon = document.createElement('div');
+    icon.textContent = '💬';
+    this.applyStyles(icon, {
+      fontSize: '32px',
+      marginBottom: '16px'
+    });
+    
+    // Message
+    const message = document.createElement('div');
+    message.textContent = 'No channels found';
+    this.applyStyles(message, {
+      fontSize: '18px',
+      fontWeight: 'bold',
+      marginBottom: '8px'
+    });
+    
+    // Submessage
+    const submessage = document.createElement('div');
+    
+    // Check if user can create channels
+    if (authContext.hasPermission('channel.create')) {
+      submessage.textContent = 'Create a new channel to get started';
+      
+      // Create button
+      const createButton = document.createElement('button');
+      createButton.textContent = 'Create Channel';
+      this.applyStyles(createButton, {
+        marginTop: '16px',
+        padding: '8px 16px',
+        backgroundColor: '#2196F3',
+        color: 'white',
+        border: 'none',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontWeight: 'bold'
+      });
+      
+      createButton.addEventListener('click', () => {
+        // Trigger the create channel event
+        const createEvent = new CustomEvent('channel-create');
+        document.dispatchEvent(createEvent);
+      });
+      
+      emptyState.appendChild(icon);
+      emptyState.appendChild(message);
+      emptyState.appendChild(submessage);
+      emptyState.appendChild(createButton);
+    } else {
+      // User cannot create channels
+      submessage.textContent = 'No channels are available.';
+      
+      emptyState.appendChild(icon);
+      emptyState.appendChild(message);
+      emptyState.appendChild(submessage);
+    }
+    
+    this.tableElement.appendChild(emptyState);
+  }
+  
+  /**
+   * Handle header click for sorting
+   * @param {string} field - Field to sort by
+   */
+  handleHeaderClick(field) {
+    if (typeof this.options.onSort === 'function') {
+      this.options.onSort(field);
+    }
+  }
+  
+  /**
+   * Handle row click for selection
+   * @param {Object} channel - Selected channel
+   */
+  handleRowClick(channel) {
+    // Update last selected row
+    if (this.lastSelectedRow) {
+      this.lastSelectedRow.style.backgroundColor = 'transparent';
+    }
+    
+    // Get the clicked row
+    const row = this.tableBodyElement.querySelector(`[data-channel-id="${channel.id}"]`);
+    if (row) {
+      row.style.backgroundColor = '#e3f2fd';
+      this.lastSelectedRow = row;
+    }
+    
+    if (typeof this.options.onSelect === 'function') {
+      this.options.onSelect(channel);
+    }
+  }
+  
+  /**
+   * Handle pagination click
+   * @param {number} page - Page number
+   */
+  handlePageClick(page) {
+    if (typeof this.options.onPageChange === 'function') {
+      this.options.onPageChange(page);
+    }
+  }
+  
+  /**
+   * Update table options and re-render
+   * @param {Object} newOptions - New options
+   */
+  update(newOptions) {
+    this.options = { ...this.options, ...newOptions };
+    this.render();
   }
   
   /**
@@ -437,14 +664,34 @@ class ChannelTable {
   }
   
   /**
-   * Destroy the component
+   * Refresh the table
+   */
+  refresh() {
+    this.render();
+  }
+  
+  /**
+   * Get selected channel ID
+   * @returns {string|null} Selected channel ID
+   */
+  getSelectedChannelId() {
+    return this.options.selectedChannelId;
+  }
+  
+  /**
+   * Cleanup resources
    */
   destroy() {
-    // Remove event listeners
-    
-    // Remove from DOM
-    if (this.tableContainer && this.tableContainer.parentNode) {
-      this.tableContainer.parentNode.removeChild(this.tableContainer);
+    try {
+      // Clean up elements
+      if (this.tableElement && this.tableElement.parentNode) {
+        this.tableElement.parentNode.removeChild(this.tableElement);
+      }
+      
+      // Log destruction
+      logChatEvent('ui', 'Channel table destroyed');
+    } catch (error) {
+      console.error('[ChannelTable] Error during destruction:', error);
     }
   }
 }
