@@ -1,32 +1,81 @@
 // chat/components/admin/users/CreateUserModal.js
-// Modal for creating new users
+// Create user modal component for HIPAA-compliant chat
 
-import { createUser } from '../../../services/auth';
 import { logChatEvent } from '../../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../../utils/error-handler.js';
 import { validateUsername, validatePassword, validateEmail } from '../../../utils/validation.js';
 import ModalBase from '../../common/ModalBase.js';
+import authContext from '../../../contexts/AuthContext.js';
 
 /**
- * Create User Modal Component
- * Modal for creating new users
+ * CreateUserModal Component
+ * Modal for creating new user accounts
+ * @extends ModalBase
  */
 class CreateUserModal extends ModalBase {
   /**
    * Create a new CreateUserModal
    * @param {Object} options - Modal options
-   * @param {Function} options.onSuccess - Success callback
+   * @param {Function} options.onUserCreated - Callback for when a user is created
    */
   constructor(options = {}) {
     super({
       title: 'Create New User',
       width: '500px',
+      closeOnOverlayClick: false,
+      closeOnEscape: true,
+      onClose: options.onClose,
       ...options
     });
     
     this.options = {
-      onSuccess: () => {},
+      onUserCreated: () => {},
       ...options
     };
+    
+    // Form data
+    this.formData = {
+      username: '',
+      displayName: '',
+      email: '',
+      password: '',
+      role: 'user'
+    };
+    
+    // Form errors
+    this.formErrors = {};
+    
+    // DOM elements
+    this.form = null;
+    this.submitButton = null;
+    this.cancelButton = null;
+    this.errorContainer = null;
+    
+    // Form fields
+    this.fields = {};
+    
+    // State
+    this.isSubmitting = false;
+    
+    // Available roles
+    this.availableRoles = [
+      { value: 'user', label: 'User' },
+      { value: 'moderator', label: 'Moderator' }
+    ];
+    
+    // Add admin role if user has admin permissions
+    if (authContext.hasPermission('admin.grant')) {
+      this.availableRoles.unshift({ value: 'admin', label: 'Administrator' });
+    }
+    
+    // Bind methods
+    this.handleSubmit = this.handleSubmit.bind(this);
+    this.handleInputChange = this.handleInputChange.bind(this);
+    this.validateForm = this.validateForm.bind(this);
+    this.createUser = this.createUser.bind(this);
+    this.showFieldError = this.showFieldError.bind(this);
+    this.clearFieldError = this.clearFieldError.bind(this);
+    this.resetForm = this.resetForm.bind(this);
   }
   
   /**
@@ -34,294 +83,723 @@ class CreateUserModal extends ModalBase {
    * @returns {HTMLElement} Modal content
    */
   renderContent() {
-    const content = document.createElement('div');
+    try {
+      // Create container
+      const container = document.createElement('div');
+      container.className = 'create-user-container';
+      
+      // Create error container
+      this.errorContainer = document.createElement('div');
+      this.errorContainer.className = 'form-error-container';
+      this.errorContainer.style.display = 'none';
+      
+      this.applyStyles(this.errorContainer, {
+        backgroundColor: '#ffebee',
+        color: '#c62828',
+        padding: '12px 16px',
+        borderRadius: '4px',
+        marginBottom: '16px',
+        fontSize: '14px',
+        display: 'none'
+      });
+      
+      container.appendChild(this.errorContainer);
+      
+      // Create form
+      this.form = document.createElement('form');
+      this.form.className = 'create-user-form';
+      
+      this.form.addEventListener('submit', this.handleSubmit);
+      
+      // Username field
+      const usernameField = this.createFormField({
+        name: 'username',
+        label: 'Username',
+        type: 'text',
+        placeholder: 'Enter username',
+        required: true,
+        description: 'Username must be 3-20 characters, containing only letters, numbers, underscores, and hyphens.'
+      });
+      
+      // Display name field
+      const displayNameField = this.createFormField({
+        name: 'displayName',
+        label: 'Display Name',
+        type: 'text',
+        placeholder: 'Enter display name',
+        required: false,
+        description: 'Optional name to display instead of username'
+      });
+      
+      // Email field
+      const emailField = this.createFormField({
+        name: 'email',
+        label: 'Email',
+        type: 'email',
+        placeholder: 'Enter email address',
+        required: true,
+        description: 'User\'s email address for notifications and password recovery'
+      });
+      
+      // Password field
+      const passwordField = this.createFormField({
+        name: 'password',
+        label: 'Password',
+        type: 'password',
+        placeholder: 'Enter password',
+        required: true,
+        description: 'Password must be at least 8 characters and include uppercase, lowercase, and numbers',
+        showPasswordToggle: true
+      });
+      
+      // Role field
+      const roleField = this.createSelectField({
+        name: 'role',
+        label: 'User Role',
+        options: this.availableRoles,
+        defaultValue: 'user',
+        description: 'Role determines the user\'s permissions in the system'
+      });
+      
+      // Add fields to form
+      this.form.appendChild(usernameField);
+      this.form.appendChild(displayNameField);
+      this.form.appendChild(emailField);
+      this.form.appendChild(passwordField);
+      this.form.appendChild(roleField);
+      
+      // Add form to container
+      container.appendChild(this.form);
+      
+      return container;
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.RENDER_ERROR,
+        category: ErrorCategory.UI,
+        source: 'CreateUserModal',
+        message: 'Failed to render create user modal content'
+      });
+      
+      // Return basic error content
+      const errorContent = document.createElement('div');
+      errorContent.textContent = 'Error rendering form. Please try again.';
+      return errorContent;
+    }
+  }
+  
+  /**
+   * Render the modal footer
+   * @returns {HTMLElement} Modal footer
+   */
+  renderFooter() {
+    // Create footer container
+    const footerContainer = document.createElement('div');
+    footerContainer.className = 'modal-footer-buttons';
     
-    // Create form
-    const form = document.createElement('form');
-    form.id = 'create-user-form';
-    
-    // Username field
-    const usernameGroup = this.createFormGroup('username', 'Username', 'text', '', 'Enter username');
-    form.appendChild(usernameGroup);
-    
-    // Display name field
-    const displayNameGroup = this.createFormGroup('displayName', 'Display Name', 'text', '', 'Enter display name');
-    form.appendChild(displayNameGroup);
-    
-    // Email field
-    const emailGroup = this.createFormGroup('email', 'Email Address', 'email', '', 'Enter email address');
-    form.appendChild(emailGroup);
-    
-    // Password field
-    const passwordGroup = this.createFormGroup('password', 'Password', 'password', '', 'Enter password');
-    form.appendChild(passwordGroup);
-    
-    // Password hint
-    const passwordHint = document.createElement('div');
-    passwordHint.textContent = 'Password must be at least 8 characters with uppercase, lowercase, and numbers.';
-    this.applyStyles(passwordHint, {
-      fontSize: '12px',
-      color: '#6c757d',
-      marginTop: '-10px',
-      marginBottom: '15px'
-    });
-    form.appendChild(passwordHint);
-    
-    // Confirm password field
-    const confirmPasswordGroup = this.createFormGroup('confirmPassword', 'Confirm Password', 'password', '', 'Confirm password');
-    form.appendChild(confirmPasswordGroup);
-    
-    // Role selection
-    const roleGroup = document.createElement('div');
-    this.applyStyles(roleGroup, {
-      marginBottom: '15px'
-    });
-    
-    const roleLabel = document.createElement('label');
-    roleLabel.textContent = 'Role';
-    roleLabel.htmlFor = 'user-role';
-    this.applyStyles(roleLabel, {
-      display: 'block',
-      marginBottom: '5px',
-      fontWeight: 'bold'
-    });
-    
-    const roleSelect = document.createElement('select');
-    roleSelect.id = 'user-role';
-    roleSelect.name = 'role';
-    this.applyStyles(roleSelect, {
-      width: '100%',
-      padding: '8px 12px',
-      border: '1px solid #ced4da',
-      borderRadius: '4px',
-      boxSizing: 'border-box'
-    });
-    
-    const roleOptions = [
-      { value: 'user', label: 'Regular User' },
-      { value: 'moderator', label: 'Moderator' },
-      { value: 'admin', label: 'Administrator' }
-    ];
-    
-    roleOptions.forEach(option => {
-      const optionElement = document.createElement('option');
-      optionElement.value = option.value;
-      optionElement.textContent = option.label;
-      roleSelect.appendChild(optionElement);
-    });
-    
-    roleGroup.appendChild(roleLabel);
-    roleGroup.appendChild(roleSelect);
-    form.appendChild(roleGroup);
-    
-    // Error message area
-    const errorMessage = document.createElement('div');
-    errorMessage.id = 'create-user-error';
-    this.applyStyles(errorMessage, {
-      color: '#dc3545',
-      marginBottom: '15px',
-      display: 'none'
-    });
-    form.appendChild(errorMessage);
-    
-    // Form actions
-    const formActions = document.createElement('div');
-    this.applyStyles(formActions, {
+    this.applyStyles(footerContainer, {
       display: 'flex',
       justifyContent: 'flex-end',
-      gap: '10px',
-      marginTop: '20px'
+      gap: '12px'
     });
     
-    const cancelButton = document.createElement('button');
-    cancelButton.type = 'button';
-    cancelButton.textContent = 'Cancel';
-    this.applyStyles(cancelButton, {
+    // Cancel button
+    this.cancelButton = document.createElement('button');
+    this.cancelButton.type = 'button';
+    this.cancelButton.className = 'cancel-button';
+    this.cancelButton.textContent = 'Cancel';
+    
+    this.applyStyles(this.cancelButton, {
       padding: '8px 16px',
-      backgroundColor: '#f8f9fa',
-      border: '1px solid #ced4da',
+      backgroundColor: '#f5f5f5',
+      color: '#333',
+      border: '1px solid #ddd',
       borderRadius: '4px',
+      fontSize: '14px',
       cursor: 'pointer'
     });
     
-    cancelButton.addEventListener('click', () => {
+    this.cancelButton.addEventListener('click', () => {
       this.close();
     });
     
-    const createButton = document.createElement('button');
-    createButton.type = 'submit';
-    createButton.textContent = 'Create User';
-    this.applyStyles(createButton, {
+    // Submit button
+    this.submitButton = document.createElement('button');
+    this.submitButton.type = 'submit';
+    this.submitButton.className = 'submit-button';
+    this.submitButton.textContent = 'Create User';
+    this.submitButton.form = 'create-user-form';
+    
+    this.applyStyles(this.submitButton, {
       padding: '8px 16px',
-      backgroundColor: '#28a745',
+      backgroundColor: '#2196F3',
       color: 'white',
       border: 'none',
       borderRadius: '4px',
+      fontSize: '14px',
+      fontWeight: 'bold',
       cursor: 'pointer'
     });
     
-    formActions.appendChild(cancelButton);
-    formActions.appendChild(createButton);
-    form.appendChild(formActions);
+    // Add buttons to footer
+    footerContainer.appendChild(this.cancelButton);
+    footerContainer.appendChild(this.submitButton);
     
-    // Form submission handler
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await this.handleCreateUser(form, errorMessage, createButton);
-    });
-    
-    content.appendChild(form);
-    
-    // Set focus to username field on next tick
-    setTimeout(() => {
-      form.elements.username.focus();
-    }, 0);
-    
-    return content;
+    return footerContainer;
   }
   
   /**
-   * Create a form input group
-   * @param {string} id - Input ID
-   * @param {string} label - Input label
-   * @param {string} type - Input type
-   * @param {string} value - Input value
-   * @param {string} placeholder - Input placeholder
-   * @returns {HTMLElement} Form group element
+   * Create a form field
+   * @param {Object} options - Field options
+   * @returns {HTMLElement} Form field container
    */
-  createFormGroup(id, label, type, value, placeholder) {
-    const group = document.createElement('div');
-    this.applyStyles(group, {
-      marginBottom: '15px'
+  createFormField(options) {
+    const {
+      name,
+      label,
+      type,
+      placeholder,
+      required,
+      description,
+      defaultValue,
+      showPasswordToggle
+    } = options;
+    
+    // Create field container
+    const fieldContainer = document.createElement('div');
+    fieldContainer.className = 'form-field';
+    
+    this.applyStyles(fieldContainer, {
+      marginBottom: '16px'
     });
     
-    const labelElement = document.createElement('label');
-    labelElement.textContent = label;
-    labelElement.htmlFor = id;
-    this.applyStyles(labelElement, {
+    // Create label
+    const fieldLabel = document.createElement('label');
+    fieldLabel.htmlFor = `${name}-input`;
+    fieldLabel.textContent = label;
+    
+    if (required) {
+      const requiredMark = document.createElement('span');
+      requiredMark.textContent = ' *';
+      requiredMark.style.color = '#f44336';
+      fieldLabel.appendChild(requiredMark);
+    }
+    
+    this.applyStyles(fieldLabel, {
       display: 'block',
-      marginBottom: '5px',
+      marginBottom: '6px',
+      fontSize: '14px',
       fontWeight: 'bold'
     });
     
+    // Create input container (for password toggle)
+    const inputContainer = document.createElement('div');
+    inputContainer.className = 'input-container';
+    
+    this.applyStyles(inputContainer, {
+      position: 'relative'
+    });
+    
+    // Create input
     const input = document.createElement('input');
     input.type = type;
-    input.id = id;
-    input.name = id;
-    input.value = value;
+    input.id = `${name}-input`;
+    input.name = name;
     input.placeholder = placeholder;
+    input.required = required;
+    input.value = defaultValue || '';
+    
     this.applyStyles(input, {
       width: '100%',
-      padding: '8px 12px',
-      border: '1px solid #ced4da',
+      padding: '10px 12px',
+      border: '1px solid #ddd',
       borderRadius: '4px',
+      fontSize: '14px',
       boxSizing: 'border-box'
     });
     
-    group.appendChild(labelElement);
-    group.appendChild(input);
+    input.addEventListener('input', (e) => {
+      this.handleInputChange(e);
+    });
     
-    return group;
+    inputContainer.appendChild(input);
+    
+    // Password toggle button
+    if (showPasswordToggle && type === 'password') {
+      const toggleButton = document.createElement('button');
+      toggleButton.type = 'button';
+      toggleButton.className = 'password-toggle';
+      toggleButton.innerHTML = '👁️';
+      toggleButton.title = 'Show password';
+      
+      this.applyStyles(toggleButton, {
+        position: 'absolute',
+        right: '12px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        fontSize: '16px',
+        color: '#666',
+        padding: '0'
+      });
+      
+      toggleButton.addEventListener('click', () => {
+        if (input.type === 'password') {
+          input.type = 'text';
+          toggleButton.title = 'Hide password';
+        } else {
+          input.type = 'password';
+          toggleButton.title = 'Show password';
+        }
+      });
+      
+      inputContainer.appendChild(toggleButton);
+    }
+    
+    // Create error message
+    const errorMessage = document.createElement('div');
+    errorMessage.className = 'field-error';
+    errorMessage.id = `${name}-error`;
+    
+    this.applyStyles(errorMessage, {
+      color: '#f44336',
+      fontSize: '12px',
+      marginTop: '4px',
+      display: 'none'
+    });
+    
+    // Create description
+    const fieldDescription = document.createElement('div');
+    fieldDescription.className = 'field-description';
+    fieldDescription.textContent = description || '';
+    
+    this.applyStyles(fieldDescription, {
+      fontSize: '12px',
+      color: '#666',
+      marginTop: '4px'
+    });
+    
+    // Add elements to container
+    fieldContainer.appendChild(fieldLabel);
+    fieldContainer.appendChild(inputContainer);
+    fieldContainer.appendChild(errorMessage);
+    fieldContainer.appendChild(fieldDescription);
+    
+    // Store field references
+    this.fields[name] = {
+      input,
+      errorMessage
+    };
+    
+    return fieldContainer;
   }
   
   /**
-   * Handle create user form submission
-   * @param {HTMLFormElement} form - Form element
-   * @param {HTMLElement} errorElement - Error message element
-   * @param {HTMLElement} submitButton - Submit button element
+   * Create a select field
+   * @param {Object} options - Field options
+   * @returns {HTMLElement} Form field container
    */
-  async handleCreateUser(form, errorElement, submitButton) {
-    // Get form data
-    const formData = new FormData(form);
-    const userData = {
-      username: formData.get('username'),
-      displayName: formData.get('displayName'),
-      email: formData.get('email'),
-      password: formData.get('password'),
-      confirmPassword: formData.get('confirmPassword'),
-      role: formData.get('role')
+  createSelectField(options) {
+    const {
+      name,
+      label,
+      options: selectOptions,
+      defaultValue,
+      description,
+      required
+    } = options;
+    
+    // Create field container
+    const fieldContainer = document.createElement('div');
+    fieldContainer.className = 'form-field';
+    
+    this.applyStyles(fieldContainer, {
+      marginBottom: '16px'
+    });
+    
+    // Create label
+    const fieldLabel = document.createElement('label');
+    fieldLabel.htmlFor = `${name}-input`;
+    fieldLabel.textContent = label;
+    
+    if (required) {
+      const requiredMark = document.createElement('span');
+      requiredMark.textContent = ' *';
+      requiredMark.style.color = '#f44336';
+      fieldLabel.appendChild(requiredMark);
+    }
+    
+    this.applyStyles(fieldLabel, {
+      display: 'block',
+      marginBottom: '6px',
+      fontSize: '14px',
+      fontWeight: 'bold'
+    });
+    
+    // Create select
+    const select = document.createElement('select');
+    select.id = `${name}-input`;
+    select.name = name;
+    select.required = required;
+    
+    this.applyStyles(select, {
+      width: '100%',
+      padding: '10px 12px',
+      border: '1px solid #ddd',
+      borderRadius: '4px',
+      fontSize: '14px',
+      boxSizing: 'border-box',
+      backgroundColor: '#fff',
+      appearance: 'none',
+      backgroundImage: 'url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 12 12\'%3E%3Cpath fill=\'%23333\' d=\'M10.3,3.3L6,7.6L1.7,3.3c-0.4-0.4-1-0.4-1.4,0s-0.4,1,0,1.4l5,5c0.2,0.2,0.5,0.3,0.7,0.3s0.5-0.1,0.7-0.3l5-5c0.4-0.4,0.4-1,0-1.4S10.7,2.9,10.3,3.3z\'/%3E%3C/svg%3E")',
+      backgroundRepeat: 'no-repeat',
+      backgroundPosition: 'right 12px center'
+    });
+    
+    // Add options
+    selectOptions.forEach(option => {
+      const optionElement = document.createElement('option');
+      optionElement.value = option.value;
+      optionElement.textContent = option.label;
+      optionElement.selected = option.value === defaultValue;
+      select.appendChild(optionElement);
+    });
+    
+    select.addEventListener('change', (e) => {
+      this.handleInputChange(e);
+    });
+    
+    // Create error message
+    const errorMessage = document.createElement('div');
+    errorMessage.className = 'field-error';
+    errorMessage.id = `${name}-error`;
+    
+    this.applyStyles(errorMessage, {
+      color: '#f44336',
+      fontSize: '12px',
+      marginTop: '4px',
+      display: 'none'
+    });
+    
+    // Create description
+    const fieldDescription = document.createElement('div');
+    fieldDescription.className = 'field-description';
+    fieldDescription.textContent = description || '';
+    
+    this.applyStyles(fieldDescription, {
+      fontSize: '12px',
+      color: '#666',
+      marginTop: '4px'
+    });
+    
+    // Add elements to container
+    fieldContainer.appendChild(fieldLabel);
+    fieldContainer.appendChild(select);
+    fieldContainer.appendChild(errorMessage);
+    fieldContainer.appendChild(fieldDescription);
+    
+    // Store field references
+    this.fields[name] = {
+      input: select,
+      errorMessage
     };
     
-    // Validate form data
-    const usernameValidation = validateUsername(userData.username);
-    if (!usernameValidation.success) {
-      this.showFormError(errorElement, usernameValidation.error);
+    return fieldContainer;
+  }
+  
+  /**
+   * Handle input change
+   * @param {Event} event - Input event
+   */
+  handleInputChange(event) {
+    const { name, value } = event.target;
+    
+    // Update form data
+    this.formData[name] = value;
+    
+    // Clear field error if it exists
+    this.clearFieldError(name);
+  }
+  
+  /**
+   * Handle form submit
+   * @param {Event} event - Submit event
+   */
+  async handleSubmit(event) {
+    event.preventDefault();
+    
+    // Prevent multiple submissions
+    if (this.isSubmitting) {
       return;
     }
-    
-    const passwordValidation = validatePassword(userData.password);
-    if (!passwordValidation.success) {
-      this.showFormError(errorElement, passwordValidation.error);
-      return;
-    }
-    
-    if (userData.password !== userData.confirmPassword) {
-      this.showFormError(errorElement, 'Passwords do not match');
-      return;
-    }
-    
-    if (userData.email) {
-      const emailValidation = validateEmail(userData.email);
-      if (!emailValidation.success) {
-        this.showFormError(errorElement, emailValidation.error);
-        return;
-      }
-    }
-    
-    // Disable form submission
-    submitButton.disabled = true;
-    submitButton.textContent = 'Creating...';
     
     try {
-      // Call API to create user
-      const result = await createUser(userData);
+      // Set submitting state
+      this.isSubmitting = true;
+      this.updateSubmitButton(true);
       
+      // Validate form
+      const isValid = this.validateForm();
+      
+      if (!isValid) {
+        // Stop if validation failed
+        this.isSubmitting = false;
+        this.updateSubmitButton(false);
+        return;
+      }
+      
+      // Create user
+      const result = await this.createUser();
+      
+      // Handle result
       if (result.success) {
+        // Reset form
+        this.resetForm();
+        
+        // Call onUserCreated callback
+        this.options.onUserCreated(result.user);
+        
         // Close modal
         this.close();
         
-        // Call success callback
-        if (this.options.onSuccess && typeof this.options.onSuccess === 'function') {
-          this.options.onSuccess(result.user);
-        }
-        
-        // Log user creation
-        logChatEvent('admin', 'Created new user', { 
-          username: userData.username,
-          role: userData.role
+        // Log success
+        logChatEvent('admin', 'User created successfully', {
+          username: this.formData.username,
+          role: this.formData.role
         });
       } else {
-        this.showFormError(errorElement, result.error || 'Failed to create user');
+        // Show error
+        this.showFormError(result.error || 'Failed to create user');
         
-        // Re-enable submit button
-        submitButton.disabled = false;
-        submitButton.textContent = 'Create User';
+        // Log error
+        logChatEvent('admin', 'User creation failed', {
+          username: this.formData.username,
+          error: result.error
+        });
       }
     } catch (error) {
-      console.error('[CRM Extension] Error creating user:', error);
-      this.showFormError(errorElement, 'An error occurred while creating the user');
+      // Show error
+      this.showFormError('An unexpected error occurred');
       
-      // Re-enable submit button
-      submitButton.disabled = false;
-      submitButton.textContent = 'Create User';
+      // Log error
+      handleError(error, {
+        code: ErrorCode.API_REQUEST_FAILED,
+        category: ErrorCategory.DATA,
+        source: 'CreateUserModal',
+        message: 'Failed to create user'
+      });
+    } finally {
+      // Reset submitting state
+      this.isSubmitting = false;
+      this.updateSubmitButton(false);
     }
   }
   
   /**
-   * Show error message in form
-   * @param {HTMLElement} errorElement - Error message element
-   * @param {string} message - Error message
+   * Validate form data
+   * @returns {boolean} Whether form is valid
    */
-  showFormError(errorElement, message) {
-    if (!errorElement) return;
+  validateForm() {
+    // Reset form errors
+    this.formErrors = {};
     
-    errorElement.textContent = message;
-    errorElement.style.display = 'block';
+    // Hide any existing form error
+    this.hideFormError();
     
-    // Automatically hide after 5 seconds
-    setTimeout(() => {
-      errorElement.style.display = 'none';
-    }, 5000);
+    // Validate username
+    const usernameResult = validateUsername(this.formData.username);
+    if (!usernameResult.success) {
+      this.formErrors.username = usernameResult.error;
+      this.showFieldError('username', usernameResult.error);
+    }
+    
+    // Validate email if provided
+    if (this.formData.email) {
+      const emailResult = validateEmail(this.formData.email);
+      if (!emailResult.success) {
+        this.formErrors.email = emailResult.error;
+        this.showFieldError('email', emailResult.error);
+      }
+    }
+    
+    // Validate password
+    const passwordResult = validatePassword(this.formData.password);
+    if (!passwordResult.success) {
+      this.formErrors.password = passwordResult.error;
+      this.showFieldError('password', passwordResult.error);
+    }
+    
+    // Return whether form is valid
+    return Object.keys(this.formErrors).length === 0;
+  }
+  
+  /**
+   * Create user
+   * @returns {Promise<Object>} Creation result
+   */
+  async createUser() {
+    // Create user through auth context
+    const result = await authContext.createUser({
+      username: this.formData.username,
+      displayName: this.formData.displayName || undefined,
+      email: this.formData.email,
+      password: this.formData.password,
+      role: this.formData.role
+    });
+    
+    return result;
+  }
+  
+  /**
+   * Show field error
+   * @param {string} fieldName - Field name
+   * @param {string} error - Error message
+   */
+  showFieldError(fieldName, error) {
+    const field = this.fields[fieldName];
+    
+    if (field) {
+      // Show error message
+      field.errorMessage.textContent = error;
+      field.errorMessage.style.display = 'block';
+      
+      // Add error class to input
+      field.input.classList.add('error');
+      field.input.style.borderColor = '#f44336';
+    }
+  }
+  
+  /**
+   * Clear field error
+   * @param {string} fieldName - Field name
+   */
+  clearFieldError(fieldName) {
+    const field = this.fields[fieldName];
+    
+    if (field) {
+      // Hide error message
+      field.errorMessage.textContent = '';
+      field.errorMessage.style.display = 'none';
+      
+      // Remove error class from input
+      field.input.classList.remove('error');
+      field.input.style.borderColor = '#ddd';
+    }
+  }
+  
+  /**
+   * Show form error
+   * @param {string} error - Error message
+   */
+  showFormError(error) {
+    if (this.errorContainer) {
+      this.errorContainer.textContent = error;
+      this.errorContainer.style.display = 'block';
+    }
+  }
+  
+  /**
+   * Hide form error
+   */
+  hideFormError() {
+    if (this.errorContainer) {
+      this.errorContainer.textContent = '';
+      this.errorContainer.style.display = 'none';
+    }
+  }
+  
+  /**
+   * Update submit button state
+   * @param {boolean} isLoading - Whether button is in loading state
+   */
+  updateSubmitButton(isLoading) {
+    if (this.submitButton) {
+      this.submitButton.disabled = isLoading;
+      this.submitButton.textContent = isLoading ? 'Creating...' : 'Create User';
+      this.submitButton.style.opacity = isLoading ? '0.7' : '1';
+    }
+    
+    if (this.cancelButton) {
+      this.cancelButton.disabled = isLoading;
+    }
+  }
+  
+  /**
+   * Reset form data and UI
+   */
+  resetForm() {
+    // Reset form data
+    this.formData = {
+      username: '',
+      displayName: '',
+      email: '',
+      password: '',
+      role: 'user'
+    };
+    
+    // Reset form errors
+    this.formErrors = {};
+    
+    // Reset form UI
+    if (this.form) {
+      this.form.reset();
+    }
+    
+    // Hide form error
+    this.hideFormError();
+    
+    // Clear field errors
+    Object.keys(this.fields).forEach(fieldName => {
+      this.clearFieldError(fieldName);
+    });
+  }
+  
+  /**
+   * Show the modal
+   */
+  show() {
+    // Reset form before showing
+    this.resetForm();
+    
+    // Call parent show method
+    super.show();
+    
+    // Focus first input
+    if (this.fields.username && this.fields.username.input) {
+      this.fields.username.input.focus();
+    }
+    
+    // Log modal shown
+    logChatEvent('admin', 'Create user modal opened');
+  }
+  
+  /**
+   * Clean up resources
+   */
+  destroy() {
+    try {
+      // Clean up form event listeners
+      if (this.form) {
+        this.form.removeEventListener('submit', this.handleSubmit);
+      }
+      
+      // Clean up field event listeners
+      Object.values(this.fields).forEach(field => {
+        if (field.input) {
+          field.input.removeEventListener('input', this.handleInputChange);
+          field.input.removeEventListener('change', this.handleInputChange);
+        }
+      });
+      
+      // Call parent destroy
+      super.destroy();
+      
+      // Log destruction
+      logChatEvent('admin', 'Create user modal destroyed');
+    } catch (error) {
+      console.error('[CreateUserModal] Error destroying modal:', error);
+    }
   }
 }
 

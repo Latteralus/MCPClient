@@ -1,454 +1,650 @@
 // chat/components/admin/UserManager.js
 // User management component for HIPAA-compliant chat
 
-import { 
-    getAllUsers, 
-    getCurrentUser, 
-    hasPermission
-  } from '../../services/auth';
-  import { logChatEvent } from '../../utils/logger.js';
-  import UserTable from './users/UserTable.js';
-  import UserToolbar from './users/UserToolbar.js';
-  import CreateUserModal from './users/CreateUserModal.js';
-  import EditUserModal from './users/EditUserModal.js';
-  import DeleteUserModal from './users/DeleteUserModal.js';
-  import ResetPasswordModal from './users/ResetPasswordModal.js';
-  import ImportUsersModal from './users/ImportUsersModal.js';
+import { logChatEvent } from '../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../utils/error-handler.js';
+import { getConfig } from '../../config/index.js';
+import authContext from '../../contexts/AuthContext.js';
+import UserTable from './users/UserTable.js';
+import UserToolbar from './users/UserToolbar.js';
+import CreateUserModal from './users/CreateUserModal.js';
+import EditUserModal from './users/EditUserModal.js';
+import DeleteUserModal from './users/DeleteUserModal.js';
+import ResetPasswordModal from './users/ResetPasswordModal.js';
+import ImportUsersModal from './users/ImportUsersModal.js';
+
+/**
+ * UserManager Component
+ * Provides user management functionality for administrators
+ */
+class UserManager {
+  /**
+   * Create a new UserManager
+   * @param {HTMLElement} container - Container element
+   * @param {Object} options - Configuration options
+   */
+  constructor(container, options = {}) {
+    this.container = container;
+    this.options = {
+      pageSize: 10,
+      ...options
+    };
+    
+    // DOM elements
+    this.managerElement = null;
+    
+    // State
+    this.users = [];
+    this.selectedUsers = [];
+    this.totalUsers = 0;
+    this.currentPage = 1;
+    this.isLoading = false;
+    this.searchTerm = '';
+    this.sortField = 'username';
+    this.sortDirection = 'asc';
+    this.filters = {
+      role: '',
+      status: ''
+    };
+    
+    // Child components
+    this.userTable = null;
+    this.userToolbar = null;
+    
+    // Modals
+    this.createUserModal = null;
+    this.editUserModal = null;
+    this.deleteUserModal = null;
+    this.resetPasswordModal = null;
+    this.importUsersModal = null;
+    
+    // Bind methods
+    this.render = this.render.bind(this);
+    this.loadUsers = this.loadUsers.bind(this);
+    this.handleSearch = this.handleSearch.bind(this);
+    this.handleSort = this.handleSort.bind(this);
+    this.handlePageChange = this.handlePageChange.bind(this);
+    this.handleFilterChange = this.handleFilterChange.bind(this);
+    this.handleUserSelection = this.handleUserSelection.bind(this);
+    this.handleCreateUser = this.handleCreateUser.bind(this);
+    this.handleEditUser = this.handleEditUser.bind(this);
+    this.handleDeleteUser = this.handleDeleteUser.bind(this);
+    this.handleResetPassword = this.handleResetPassword.bind(this);
+    this.handleImportUsers = this.handleImportUsers.bind(this);
+    
+    // Initialize
+    this.initialize();
+  }
   
   /**
-   * User Manager Component
-   * Provides user management functionality for administrators
+   * Initialize the user manager
    */
-  class UserManager {
-    /**
-     * Create a new UserManager
-     * @param {HTMLElement} container - The container element
-     */
-    constructor(container) {
-      this.container = container;
-      this.userManagerElement = null;
-      this.users = [];
-      this.isLoading = false;
+  initialize() {
+    try {
+      // Check if user has user management permissions
+      if (!this.checkPermissions()) {
+        console.error('[UserManager] User does not have user management permissions');
+        this.renderPermissionError();
+        return;
+      }
       
-      // Filter state
-      this.searchTerm = '';
-      this.roleFilter = 'all';
-      this.currentPage = 1;
-      this.pageSize = 10;
+      // Create manager element
+      this.managerElement = document.createElement('div');
+      this.managerElement.className = 'user-manager';
       
-      // Sub-components
-      this.userTable = null;
-      this.userToolbar = null;
-      
-      // Bind methods
-      this.render = this.render.bind(this);
-      this.loadUsers = this.loadUsers.bind(this);
-      this.handleSearch = this.handleSearch.bind(this);
-      this.handleRoleFilter = this.handleRoleFilter.bind(this);
-      this.handlePageChange = this.handlePageChange.bind(this);
-      this.showCreateUserModal = this.showCreateUserModal.bind(this);
-      this.showEditUserModal = this.showEditUserModal.bind(this);
-      this.showDeleteUserModal = this.showDeleteUserModal.bind(this);
-      this.showResetPasswordModal = this.showResetPasswordModal.bind(this);
-      this.showImportUsersModal = this.showImportUsersModal.bind(this);
-      
-      // Initialize
-      this.initialize();
-    }
-    
-    /**
-     * Initialize the user manager
-     */
-    initialize() {
-      // Create container element
-      this.userManagerElement = document.createElement('div');
-      this.userManagerElement.className = 'user-manager';
-      this.applyStyles(this.userManagerElement, {
+      this.applyStyles(this.managerElement, {
         display: 'flex',
         flexDirection: 'column',
         width: '100%',
-        height: '100%',
-        overflow: 'hidden',
-        backgroundColor: '#f8f9fa'
+        height: '100%'
       });
       
       // Add to container
       if (this.container) {
-        this.container.appendChild(this.userManagerElement);
+        this.container.appendChild(this.managerElement);
       }
       
-      // Load users
+      // Create layout
+      this.createLayout();
+      
+      // Load initial users
       this.loadUsers();
       
       // Log initialization
       logChatEvent('admin', 'User manager initialized');
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.COMPONENT_FAILED,
+        category: ErrorCategory.UI,
+        source: 'UserManager',
+        message: 'Failed to initialize user manager'
+      });
+      
+      this.renderError('Failed to initialize user manager');
+    }
+  }
+  
+  /**
+   * Check if user has necessary permissions
+   * @returns {boolean} True if user has permissions
+   */
+  checkPermissions() {
+    return authContext.hasPermission('user.read');
+  }
+  
+  /**
+   * Create user manager layout
+   */
+  createLayout() {
+    // Create toolbar
+    this.userToolbar = new UserToolbar(this.managerElement, {
+      onCreateUser: this.handleCreateUser,
+      onDeleteUser: this.handleDeleteUser,
+      onImportUsers: this.handleImportUsers,
+      onSearch: this.handleSearch,
+      onFilterChange: this.handleFilterChange,
+      onRefresh: () => this.loadUsers(true)
+    });
+    
+    // Create table
+    this.userTable = new UserTable(this.managerElement, {
+      users: this.users,
+      totalCount: this.totalUsers,
+      currentPage: this.currentPage,
+      pageSize: this.options.pageSize,
+      isLoading: this.isLoading,
+      sortField: this.sortField,
+      sortDirection: this.sortDirection,
+      selectedUsers: this.selectedUsers,
+      onUserSelect: this.handleUserSelection,
+      onPageChange: this.handlePageChange,
+      onSort: this.handleSort,
+      onEdit: this.handleEditUser,
+      onDelete: this.handleDeleteUser,
+      onResetPassword: this.handleResetPassword
+    });
+    
+    // Create modals
+    this.createCreateUserModal();
+    this.createEditUserModal();
+    this.createDeleteUserModal();
+    this.createResetPasswordModal();
+    this.createImportUsersModal();
+  }
+  
+  /**
+   * Create the create user modal
+   */
+  createCreateUserModal() {
+    this.createUserModal = new CreateUserModal({
+      onUserCreated: (user) => {
+        // Add user to table if needed and reload
+        this.loadUsers();
+        
+        // Log event
+        logChatEvent('admin', 'User created', {
+          username: user.username
+        });
+      }
+    });
+  }
+  
+  /**
+   * Create the edit user modal
+   */
+  createEditUserModal() {
+    this.editUserModal = new EditUserModal({
+      onUserUpdated: (user) => {
+        // Update user in table and reload
+        this.loadUsers();
+        
+        // Log event
+        logChatEvent('admin', 'User updated', {
+          userId: user.id,
+          username: user.username
+        });
+      }
+    });
+  }
+  
+  /**
+   * Create the delete user modal
+   */
+  createDeleteUserModal() {
+    this.deleteUserModal = new DeleteUserModal({
+      onUserDeleted: (userId) => {
+        // Remove user from selected users
+        this.selectedUsers = this.selectedUsers.filter(id => id !== userId);
+        
+        // Reload users
+        this.loadUsers();
+        
+        // Log event
+        logChatEvent('admin', 'User deleted', {
+          userId
+        });
+      }
+    });
+  }
+  
+  /**
+   * Create the reset password modal
+   */
+  createResetPasswordModal() {
+    this.resetPasswordModal = new ResetPasswordModal({
+      onPasswordReset: (userId) => {
+        // Log event
+        logChatEvent('admin', 'User password reset', {
+          userId
+        });
+      }
+    });
+  }
+  
+  /**
+   * Create the import users modal
+   */
+  createImportUsersModal() {
+    this.importUsersModal = new ImportUsersModal({
+      onUsersImported: (result) => {
+        // Reload users
+        this.loadUsers();
+        
+        // Log event
+        logChatEvent('admin', 'Users imported', {
+          count: result.imported
+        });
+      }
+    });
+  }
+  
+  /**
+   * Load users from service
+   * @param {boolean} forceRefresh - Whether to force a refresh
+   */
+  async loadUsers(forceRefresh = false) {
+    try {
+      // Set loading state
+      this.isLoading = true;
+      this.updateTable();
+      
+      // Calculate pagination params
+      const offset = (this.currentPage - 1) * this.options.pageSize;
+      const limit = this.options.pageSize;
+      
+      // Prepare params
+      const params = {
+        offset,
+        limit,
+        sort: this.sortField,
+        order: this.sortDirection,
+        search: this.searchTerm || undefined,
+        role: this.filters.role || undefined,
+        status: this.filters.status || undefined,
+        forceRefresh
+      };
+      
+      // Get users from auth context
+      const result = await authContext.getAllUsers(params);
+      
+      // Update state with results
+      if (result.success) {
+        this.users = result.data.users || [];
+        this.totalUsers = result.data.total || this.users.length;
+        
+        // If current page is now invalid, go to last page
+        const totalPages = Math.ceil(this.totalUsers / this.options.pageSize);
+        if (this.currentPage > totalPages && totalPages > 0) {
+          this.currentPage = totalPages;
+          // Load again with correct page
+          this.loadUsers();
+          return;
+        }
+      } else {
+        // Handle error
+        throw new Error(result.message || 'Failed to load users');
+      }
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.DATA_NOT_FOUND,
+        category: ErrorCategory.DATA,
+        source: 'UserManager',
+        message: 'Failed to load users'
+      });
+      
+      // Keep any existing users in case of error
+      if (!this.users.length) {
+        this.users = [];
+      }
+    } finally {
+      // Set loading state
+      this.isLoading = false;
+      this.updateTable();
+    }
+  }
+  
+  /**
+   * Update the user table
+   */
+  updateTable() {
+    if (this.userTable) {
+      this.userTable.updateProps({
+        users: this.users,
+        totalCount: this.totalUsers,
+        currentPage: this.currentPage,
+        isLoading: this.isLoading,
+        sortField: this.sortField,
+        sortDirection: this.sortDirection,
+        selectedUsers: this.selectedUsers
+      });
     }
     
-    /**
-     * Load users from the server
-     */
-    async loadUsers() {
-      try {
-        this.isLoading = true;
-        this.render(); // Show loading state
-        
-        const result = await getAllUsers();
-        
-        if (result.success) {
-          this.users = result.users;
-          console.log('[CRM Extension] Loaded users:', this.users.length);
-        } else {
-          console.error('[CRM Extension] Error loading users:', result.error);
-          this.users = [];
-        }
-        
-        this.isLoading = false;
-        this.render();
-      } catch (error) {
-        console.error('[CRM Extension] Error loading users:', error);
-        this.isLoading = false;
-        this.users = [];
-        this.render();
+    if (this.userToolbar) {
+      this.userToolbar.updateProps({
+        selectedCount: this.selectedUsers.length,
+        isLoading: this.isLoading
+      });
+    }
+  }
+  
+  /**
+   * Handle search
+   * @param {string} searchTerm - Search term
+   */
+  handleSearch(searchTerm) {
+    this.searchTerm = searchTerm;
+    this.currentPage = 1; // Reset to first page
+    this.loadUsers();
+    
+    // Log search
+    logChatEvent('admin', 'User search', {
+      searchTerm
+    });
+  }
+  
+  /**
+   * Handle sort
+   * @param {string} field - Field to sort by
+   * @param {string} direction - Sort direction (asc/desc)
+   */
+  handleSort(field, direction) {
+    this.sortField = field;
+    this.sortDirection = direction;
+    this.loadUsers();
+    
+    // Log sort
+    logChatEvent('admin', 'User list sorted', {
+      field,
+      direction
+    });
+  }
+  
+  /**
+   * Handle page change
+   * @param {number} page - New page number
+   */
+  handlePageChange(page) {
+    this.currentPage = page;
+    this.loadUsers();
+    
+    // Log page change
+    logChatEvent('admin', 'User list page changed', {
+      page
+    });
+  }
+  
+  /**
+   * Handle filter change
+   * @param {Object} filters - New filters
+   */
+  handleFilterChange(filters) {
+    this.filters = filters;
+    this.currentPage = 1; // Reset to first page
+    this.loadUsers();
+    
+    // Log filter change
+    logChatEvent('admin', 'User list filters changed', {
+      filters
+    });
+  }
+  
+  /**
+   * Handle user selection
+   * @param {Array} selectedUsers - Selected user IDs
+   */
+  handleUserSelection(selectedUsers) {
+    this.selectedUsers = selectedUsers;
+    this.updateTable();
+  }
+  
+  /**
+   * Handle create user action
+   */
+  handleCreateUser() {
+    if (this.createUserModal) {
+      this.createUserModal.show();
+    }
+  }
+  
+  /**
+   * Handle edit user action
+   * @param {string} userId - User ID to edit
+   */
+  handleEditUser(userId) {
+    if (this.editUserModal) {
+      // Find user in current list
+      const user = this.users.find(u => u.id === userId);
+      
+      if (user) {
+        this.editUserModal.setUser(user);
+        this.editUserModal.show();
+      } else {
+        console.error(`[UserManager] User not found: ${userId}`);
       }
     }
-    
-    /**
-     * Render the user manager
-     */
-    render() {
-      if (!this.userManagerElement) return;
+  }
+  
+  /**
+   * Handle delete user action
+   * @param {string} userId - User ID to delete
+   */
+  handleDeleteUser(userId) {
+    if (this.deleteUserModal) {
+      // If userId is provided, use that, otherwise use selected users
+      const userIds = userId ? [userId] : this.selectedUsers;
       
-      // Clear existing content
-      this.userManagerElement.innerHTML = '';
-      
-      // Check permissions
-      const currentUser = getCurrentUser();
-      const isAdmin = currentUser && currentUser.role === 'admin';
-      
-      if (!isAdmin) {
-        this.renderAccessDenied();
+      if (userIds.length === 0) {
+        console.warn('[UserManager] No users selected for deletion');
         return;
       }
       
-      // Create header
-      const header = document.createElement('div');
-      header.className = 'user-manager-header';
-      this.applyStyles(header, {
-        marginBottom: '20px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'flex-start'
-      });
+      this.deleteUserModal.setUserIds(userIds);
+      this.deleteUserModal.show();
+    }
+  }
+  
+  /**
+   * Handle reset password action
+   * @param {string} userId - User ID to reset password for
+   */
+  handleResetPassword(userId) {
+    if (this.resetPasswordModal) {
+      // Find user in current list
+      const user = this.users.find(u => u.id === userId);
       
-      const titleBlock = document.createElement('div');
-      
-      const title = document.createElement('h3');
-      title.textContent = 'User Management';
-      this.applyStyles(title, {
-        margin: '0 0 8px 0',
-        fontSize: '20px',
-        fontWeight: 'bold'
-      });
-      
-      const subtitle = document.createElement('p');
-      subtitle.textContent = `${this.users.length} users in system`;
-      this.applyStyles(subtitle, {
-        margin: '0',
-        color: '#6c757d',
-        fontSize: '14px'
-      });
-      
-      titleBlock.appendChild(title);
-      titleBlock.appendChild(subtitle);
-      
-      // Action buttons
-      const actionButtons = document.createElement('div');
-      this.applyStyles(actionButtons, {
-        display: 'flex',
-        gap: '10px'
-      });
-      
-      // Create user button
-      const createButton = document.createElement('button');
-      createButton.textContent = 'Create User';
-      this.applyStyles(createButton, {
-        padding: '8px 16px',
-        backgroundColor: '#28a745',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        display: 'flex',
-        alignItems: 'center'
-      });
-      
-      createButton.addEventListener('click', this.showCreateUserModal);
-      
-      const createIcon = document.createElement('span');
-      createIcon.textContent = '➕';
-      this.applyStyles(createIcon, {
-        marginRight: '5px'
-      });
-      
-      createButton.prepend(createIcon);
-      
-      // Import users button
-      const importButton = document.createElement('button');
-      importButton.textContent = 'Import Users';
-      this.applyStyles(importButton, {
-        padding: '8px 16px',
-        backgroundColor: '#6c757d',
-        color: 'white',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        display: 'flex',
-        alignItems: 'center'
-      });
-      
-      importButton.addEventListener('click', this.showImportUsersModal);
-      
-      const importIcon = document.createElement('span');
-      importIcon.textContent = '📥';
-      this.applyStyles(importIcon, {
-        marginRight: '5px'
-      });
-      
-      importButton.prepend(importIcon);
-      
-      actionButtons.appendChild(createButton);
-      actionButtons.appendChild(importButton);
-      
-      header.appendChild(titleBlock);
-      header.appendChild(actionButtons);
-      this.userManagerElement.appendChild(header);
-      
-      // Create and render toolbar (search + filters)
-      this.userToolbar = new UserToolbar({
-        searchTerm: this.searchTerm,
-        roleFilter: this.roleFilter,
-        onSearch: this.handleSearch,
-        onRoleFilterChange: this.handleRoleFilter,
-        onRefresh: this.loadUsers
-      });
-      
-      this.userManagerElement.appendChild(this.userToolbar.render());
-      
-      // Show loading state or render user table
-      if (this.isLoading) {
-        const loadingElement = document.createElement('div');
-        this.applyStyles(loadingElement, {
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '50px',
-          color: '#6c757d'
-        });
-        
-        loadingElement.textContent = 'Loading users...';
-        this.userManagerElement.appendChild(loadingElement);
+      if (user) {
+        this.resetPasswordModal.setUser(user);
+        this.resetPasswordModal.show();
       } else {
-        // Filter users
-        const filteredUsers = this.filterUsers();
-        
-        // Create and render user table
-        this.userTable = new UserTable({
-          users: filteredUsers,
-          currentPage: this.currentPage,
-          pageSize: this.pageSize,
-          onPageChange: this.handlePageChange,
-          onEditUser: this.showEditUserModal,
-          onDeleteUser: this.showDeleteUserModal,
-          onResetPassword: this.showResetPasswordModal
-        });
-        
-        this.userManagerElement.appendChild(this.userTable.render());
+        console.error(`[UserManager] User not found: ${userId}`);
       }
-      
-      return this.userManagerElement;
+    }
+  }
+  
+  /**
+   * Handle import users action
+   */
+  handleImportUsers() {
+    if (this.importUsersModal) {
+      this.importUsersModal.show();
+    }
+  }
+  
+  /**
+   * Render permission error
+   */
+  renderPermissionError() {
+    // Clear container
+    if (this.container) {
+      this.container.innerHTML = '';
     }
     
-    /**
-     * Filter users based on search term and role filter
-     * @returns {Array} Filtered users
-     */
-    filterUsers() {
-      return this.users.filter(user => {
-        // Apply search filter
-        const matchesSearch = this.searchTerm === '' || 
-          (user.username && user.username.toLowerCase().includes(this.searchTerm.toLowerCase())) ||
-          (user.displayName && user.displayName.toLowerCase().includes(this.searchTerm.toLowerCase()));
-        
-        // Apply role filter
-        const matchesRole = this.roleFilter === 'all' || user.role === this.roleFilter;
-        
-        return matchesSearch && matchesRole;
-      });
+    // Create error message
+    const errorElement = document.createElement('div');
+    errorElement.className = 'permission-error';
+    
+    this.applyStyles(errorElement, {
+      padding: '20px',
+      textAlign: 'center',
+      color: '#721c24',
+      backgroundColor: '#f8d7da',
+      border: '1px solid #f5c6cb',
+      borderRadius: '4px',
+      margin: '20px'
+    });
+    
+    const errorTitle = document.createElement('h3');
+    errorTitle.textContent = 'Permission Denied';
+    
+    const errorMessage = document.createElement('p');
+    errorMessage.textContent = 'You do not have permission to manage users.';
+    
+    errorElement.appendChild(errorTitle);
+    errorElement.appendChild(errorMessage);
+    
+    this.container.appendChild(errorElement);
+  }
+  
+  /**
+   * Render general error
+   * @param {string} message - Error message
+   */
+  renderError(message) {
+    // Clear container
+    if (this.managerElement) {
+      this.managerElement.innerHTML = '';
     }
     
-    /**
-     * Render access denied message
-     */
-    renderAccessDenied() {
-      this.userManagerElement.innerHTML = '';
-      
-      const accessDenied = document.createElement('div');
-      this.applyStyles(accessDenied, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100%',
-        padding: '20px',
-        textAlign: 'center',
-        color: '#721c24',
-        backgroundColor: '#f8d7da'
-      });
-      
-      const iconElement = document.createElement('div');
-      iconElement.innerHTML = '⛔';
-      this.applyStyles(iconElement, {
-        fontSize: '48px',
-        marginBottom: '16px'
-      });
-      
-      const titleElement = document.createElement('h3');
-      titleElement.textContent = 'Access Denied';
-      this.applyStyles(titleElement, {
-        margin: '0 0 10px 0',
-        fontSize: '24px'
-      });
-      
-      const messageElement = document.createElement('p');
-      messageElement.textContent = 'Administrator privileges are required to access User Management.';
-      
-      accessDenied.appendChild(iconElement);
-      accessDenied.appendChild(titleElement);
-      accessDenied.appendChild(messageElement);
-      
-      this.userManagerElement.appendChild(accessDenied);
-      
-      // Log access attempt
-      logChatEvent('admin', 'Access denied to user management');
-    }
+    // Create error message
+    const errorElement = document.createElement('div');
+    errorElement.className = 'error-message';
     
-    /**
-     * Handle search input
-     * @param {string} searchTerm - Search term
-     */
-    handleSearch(searchTerm) {
-      this.searchTerm = searchTerm;
-      this.currentPage = 1; // Reset to first page
-      this.render();
-    }
+    this.applyStyles(errorElement, {
+      padding: '20px',
+      textAlign: 'center',
+      color: '#721c24',
+      backgroundColor: '#f8d7da',
+      border: '1px solid #f5c6cb',
+      borderRadius: '4px',
+      margin: '20px'
+    });
     
-    /**
-     * Handle role filter change
-     * @param {string} role - Role to filter by
-     */
-    handleRoleFilter(role) {
-      this.roleFilter = role;
-      this.currentPage = 1; // Reset to first page
-      this.render();
-    }
+    const errorText = document.createElement('p');
+    errorText.textContent = message || 'An error occurred.';
     
-    /**
-     * Handle page change
-     * @param {number} page - New page number
-     */
-    handlePageChange(page) {
-      this.currentPage = page;
-      this.render();
-    }
+    const retryButton = document.createElement('button');
+    retryButton.textContent = 'Retry';
     
-    /**
-     * Show create user modal
-     */
-    showCreateUserModal() {
-      const modal = new CreateUserModal({
-        onSuccess: () => this.loadUsers()
-      });
-      modal.show();
-    }
+    this.applyStyles(retryButton, {
+      padding: '8px 16px',
+      backgroundColor: '#dc3545',
+      color: 'white',
+      border: 'none',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      marginTop: '10px'
+    });
     
-    /**
-     * Show edit user modal
-     * @param {Object} user - User to edit
-     */
-    showEditUserModal(user) {
-      const modal = new EditUserModal({
-        user,
-        onSuccess: () => this.loadUsers()
-      });
-      modal.show();
-    }
+    retryButton.addEventListener('click', () => {
+      this.loadUsers(true);
+    });
     
-    /**
-     * Show delete user modal
-     * @param {Object} user - User to delete
-     */
-    showDeleteUserModal(user) {
-      const modal = new DeleteUserModal({
-        user,
-        onSuccess: () => this.loadUsers()
-      });
-      modal.show();
-    }
+    errorElement.appendChild(errorText);
+    errorElement.appendChild(retryButton);
     
-    /**
-     * Show reset password modal
-     * @param {Object} user - User to reset password for
-     */
-    showResetPasswordModal(user) {
-      const modal = new ResetPasswordModal({
-        user,
-        onSuccess: () => this.loadUsers()
-      });
-      modal.show();
-    }
-    
-    /**
-     * Show import users modal
-     */
-    showImportUsersModal() {
-      const modal = new ImportUsersModal({
-        onSuccess: () => this.loadUsers()
-      });
-      modal.show();
-    }
-    
-    /**
-     * Apply CSS styles to an element
-     * @param {HTMLElement} element - Element to style
-     * @param {Object} styles - Styles to apply
-     */
-    applyStyles(element, styles) {
-      Object.assign(element.style, styles);
-    }
-    
-    /**
-     * Destroy the component
-     */
-    destroy() {
-      // Remove from DOM
-      if (this.userManagerElement && this.userManagerElement.parentNode) {
-        this.userManagerElement.parentNode.removeChild(this.userManagerElement);
-      }
-      
-      // Cleanup subcomponents
+    this.managerElement.appendChild(errorElement);
+  }
+  
+  /**
+   * Apply CSS styles to an element
+   * @param {HTMLElement} element - Element to style
+   * @param {Object} styles - Styles to apply
+   */
+  applyStyles(element, styles) {
+    Object.assign(element.style, styles);
+  }
+  
+  /**
+   * Render the user manager
+   */
+  render() {
+    // Initial render happens in initialize
+    // Updates happen through component update methods
+  }
+  
+  /**
+   * Clean up resources
+   */
+  destroy() {
+    try {
+      // Clean up child components
       if (this.userTable) {
         this.userTable.destroy();
+        this.userTable = null;
       }
       
       if (this.userToolbar) {
         this.userToolbar.destroy();
+        this.userToolbar = null;
+      }
+      
+      // Clean up modals
+      if (this.createUserModal) {
+        this.createUserModal.destroy();
+        this.createUserModal = null;
+      }
+      
+      if (this.editUserModal) {
+        this.editUserModal.destroy();
+        this.editUserModal = null;
+      }
+      
+      if (this.deleteUserModal) {
+        this.deleteUserModal.destroy();
+        this.deleteUserModal = null;
+      }
+      
+      if (this.resetPasswordModal) {
+        this.resetPasswordModal.destroy();
+        this.resetPasswordModal = null;
+      }
+      
+      if (this.importUsersModal) {
+        this.importUsersModal.destroy();
+        this.importUsersModal = null;
+      }
+      
+      // Remove from DOM
+      if (this.managerElement && this.managerElement.parentNode) {
+        this.managerElement.parentNode.removeChild(this.managerElement);
       }
       
       // Log destruction
       logChatEvent('admin', 'User manager destroyed');
+    } catch (error) {
+      console.error('[UserManager] Error destroying user manager:', error);
     }
   }
-  
-  export default UserManager;
+}
+
+export default UserManager;
