@@ -1,242 +1,608 @@
-// chat/components/app/AppContainer.js
-// Main application container that orchestrates the chat application
+// components/app/AppContainer.js
+// Main container component for HIPAA-compliant chat
 
-import { getCurrentUser, isAuthenticated, logout } from '../../services/auth';
-import { connectToServer, getConnectionStatus, addConnectionStatusListener } from '../../services/messageService.js';
-import { logChatEvent } from '../../utils/logger.js';
-import { initChat, isChatInitialized } from '../../index.js';
-
+import authContext from '../../contexts/AuthContext.js';
+import MessageList from '../messages/MessageList.js';
+import MessageInput from '../messages/MessageInput.js';
+import UserList from '../users/UserList.js';
+import UserStatus from '../users/UserStatus.js';
 import LoginForm from '../auth/LoginForm.js';
 import NotificationSystem from './NotificationSystem.js';
-import Header from './Header.js'; // Make sure Header is imported directly
-
-// Import modular rendering components from appcontainer folder
-import { createCustomHeader } from './appcontainer/HeaderRenderer.js';
-import { renderChatView } from './appcontainer/ChatViewRenderer.js'; 
-import { renderAdminView } from './appcontainer/AdminViewRenderer.js';
-import { renderSettingsView } from './appcontainer/SettingsViewRenderer.js';
+import Header from './Header.js';
+import { logChatEvent } from '../../utils/logger.js';
+import { initEncryption } from '../../services/encryption/encryption.js';
+import { connectToServer, disconnectFromServer, getConnectionStatus } from '../../services/websocket/connection.js';
+import { initMessageService } from '../../services/api/messages.js';
+import { initUserService } from '../../services/api/users.js';
+import { initChannelService, getAvailableChannels, setActiveChannel } from '../../services/api/channels.js';
 
 /**
- * Main Application Container Component
- * Orchestrates the entire chat application
+ * Main application container component
+ * Handles authentication state and view rendering
  */
 class AppContainer {
   /**
    * Create a new AppContainer
-   * @param {HTMLElement} container - The container element
+   * @param {HTMLElement} container - Container element
    */
   constructor(container) {
     this.container = container;
-    this.appElement = null;
+    this.state = {
+      authenticated: false,
+      user: null,
+      view: 'login', // login, chat, settings, admin
+      activeChannelId: null,
+      activeDMUserId: null,
+      connectionStatus: 'disconnected',
+      initialized: false
+    };
     
-    // Component references
     this.headerComponent = null;
-    this.loginFormComponent = null;
     this.notificationSystem = null;
+    this.messageListComponent = null;
+    this.messageInputComponent = null;
+    this.userListComponent = null;
+    this.userStatusComponent = null;
+    this.loginFormComponent = null;
     
-    // Application state
-    this.connectionStatus = 'connected'; // Default to connected for demo
-    this.currentView = 'chat'; // 'chat', 'admin', 'settings'
-    this.showUserList = true;
-    this.selectedChannel = 'general';
-    
-    // Mock data for rendering
-    this.mockData = {};
-    
-    // Connection status listener unsubscribe function
-    this.unsubscribeConnectionStatus = null;
+    // Authentication state listener
+    this.authUnsubscribe = null;
     
     // Bind methods
     this.render = this.render.bind(this);
-    this.handleConnectionStatusChange = this.handleConnectionStatusChange.bind(this);
-    this.handleLoginSuccess = this.handleLoginSuccess.bind(this);
+    this.handleLogin = this.handleLogin.bind(this);
+    this.handleLogout = this.handleLogout.bind(this);
     this.handleChannelSelect = this.handleChannelSelect.bind(this);
     this.handleUserSelect = this.handleUserSelect.bind(this);
-    this.switchView = this.switchView.bind(this);
-    this.toggleUserList = this.toggleUserList.bind(this);
-    this.toggleChatVisibility = this.toggleChatVisibility.bind(this);
-    this.handleLogout = this.handleLogout.bind(this);
+    this.handleViewChange = this.handleViewChange.bind(this);
+    this.cleanupComponents = this.cleanupComponents.bind(this);
     
-    // Initialize
+    // Initialize the container
     this.initialize();
   }
   
   /**
-   * Initialize the application
+   * Initialize the app container
    */
   async initialize() {
     try {
-      // Create a wrapper div that will hold the chat window
-      const wrapperDiv = document.createElement('div');
-      wrapperDiv.className = 'hipaa-chat-wrapper';
-      wrapperDiv.id = 'hipaa-chat-container';
+      console.log('[AppContainer] Initializing...');
       
-      // Position the wrapper in the bottom-right corner of the viewport
-      this.applyStyles(wrapperDiv, {
-        position: 'fixed',
-        bottom: '20px',
-        right: '20px',
-        zIndex: '9999', // High z-index to appear above other elements
-        width: '700px', // Fixed width for the chat window
-        height: '500px', // Fixed height for the chat window
-        boxSizing: 'border-box',
-        display: 'none' // Start hidden by default
-      });
+      // Initialize core services
+      await initEncryption();
+      initMessageService();
+      initUserService();
+      initChannelService();
       
-      // If the existing container has a parent, replace it with our wrapper
-      if (this.container && this.container.parentNode) {
-        this.container.parentNode.replaceChild(wrapperDiv, this.container);
-      } 
-      // Otherwise, append the wrapper to the body
-      else {
-        document.body.appendChild(wrapperDiv);
-      }
-      
-      // Use the wrapper as our new container
-      this.container = wrapperDiv;
-      
-      // Create main app element
-      this.appElement = document.createElement('div');
-      this.appElement.className = 'hipaa-chat-app';
-      this.applyStyles(this.appElement, {
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100%',
-        height: '100%',
-        overflow: 'hidden',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
-        borderRadius: '8px',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
-        color: '#333',
-        backgroundColor: '#fff'
-      });
-      
-      // Add to container
-      this.container.appendChild(this.appElement);
-      
-      // Setup mock data for demo
-      this.mockData = this.setupMockData();
-      
-      // CRITICAL FIX: Assign the toggle function to the global window object
-      // This ensures it's accessible from the header bar's chat button
-      window.toggleChatUI = this.toggleChatVisibility;
-      console.log('[CRM Extension] toggleChatUI registered globally', typeof window.toggleChatUI);
-      
-      // Initialize chat system if not already initialized
-      if (!isChatInitialized()) {
-        await initChat();
-      }
-      
-      // Subscribe to connection status
-      this.unsubscribeConnectionStatus = addConnectionStatusListener(this.handleConnectionStatusChange);
-      
-      // Get initial connection status
-      this.connectionStatus = getConnectionStatus();
-      
-      // Initialize notification system
+      // Create notification system (persistent across views)
       this.notificationSystem = new NotificationSystem();
       
-      // Connect to server if already authenticated
-      if (isAuthenticated()) {
-        connectToServer();
-      }
+      // Subscribe to auth state changes
+      this.authUnsubscribe = authContext.subscribe(authState => {
+        const wasAuthenticated = this.state.authenticated;
+        
+        // Update state
+        this.state.authenticated = authState.authenticated;
+        this.state.user = authState.user;
+        
+        // Handle authentication state change
+        if (authState.authenticated && !wasAuthenticated) {
+          // User logged in, connect to server and show chat view
+          this.state.view = 'chat';
+          connectToServer();
+          
+          // Set first available channel as active
+          setTimeout(() => {
+            const channels = getAvailableChannels();
+            if (channels.length > 0) {
+              this.handleChannelSelect(channels[0].id);
+            }
+          }, 500);
+        } else if (!authState.authenticated && wasAuthenticated) {
+          // User logged out, disconnect from server and show login view
+          this.state.view = 'login';
+          disconnectFromServer();
+          
+          // Clear active channel/DM
+          this.state.activeChannelId = null;
+          this.state.activeDMUserId = null;
+        }
+        
+        // Re-render the view
+        this.render();
+      });
       
-      // Render initial state
+      // Set initialized flag
+      this.state.initialized = true;
+      
+      // Initial render
       this.render();
       
-      // Log initialization
-      logChatEvent('system', 'Application initialized');
+      logChatEvent('system', 'App container initialized');
     } catch (error) {
       console.error('[AppContainer] Initialization error:', error);
-      this.renderErrorState(error);
+      logChatEvent('error', 'App container initialization error', { error: error.message });
     }
   }
   
   /**
-   * Method to toggle the visibility of the chat UI.
-   * This method is exported to the global window object
-   * to allow the header bar's chat button to access it.
+   * Render the app container
    */
-  toggleChatVisibility() {
+  render() {
     if (!this.container) return;
     
-    console.log('[CRM Extension] toggleChatVisibility called');
-    
-    // Toggle display between 'none' and 'flex'
-    const currentDisplay = this.container.style.display;
-    const newDisplay = currentDisplay === 'none' || currentDisplay === '' ? 'flex' : 'none';
-    this.container.style.display = newDisplay;
-    
-    // If we're showing the container, make sure its content is up to date
-    if (newDisplay === 'flex') {
-      this.render();
+    try {
+      // Clear container
+      this.cleanupComponents();
+      this.container.innerHTML = '';
+      
+      // Apply container styles
+      this.applyStyles(this.container, {
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        width: '100%',
+        overflow: 'hidden'
+      });
+      
+      // Render appropriate view based on authentication state
+      if (!this.state.authenticated) {
+        this.renderLoginView();
+      } else {
+        switch (this.state.view) {
+          case 'chat':
+            this.renderChatView();
+            break;
+          case 'settings':
+            this.renderSettingsView();
+            break;
+          case 'admin':
+            this.renderAdminView();
+            break;
+          default:
+            this.renderChatView();
+        }
+      }
+      
+      logChatEvent('ui', `App container rendered ${this.state.view} view`);
+    } catch (error) {
+      console.error('[AppContainer] Render error:', error);
+      logChatEvent('error', 'App container render error', { error: error.message });
+      
+      // Show error message
+      this.container.innerHTML = `
+        <div style="padding: 20px; text-align: center; color: #f44336;">
+          <h3>Error</h3>
+          <p>An error occurred while rendering the application. Please try again later.</p>
+        </div>
+      `;
     }
-    
-    console.log(`[CRM Extension] Chat container toggled to: ${this.container.style.display}`);
   }
   
   /**
-   * Handle connection status change
-   * @param {string} status - New connection status
+   * Render the login view
    */
-  handleConnectionStatusChange(status) {
-    try {
-      this.connectionStatus = status;
+  renderLoginView() {
+    // Create login container
+    const loginContainer = document.createElement('div');
+    this.applyStyles(loginContainer, {
+      width: '100%',
+      height: '100%',
+      overflow: 'auto',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px',
+      backgroundColor: '#f5f5f5'
+    });
+    
+    // Create app title
+    const titleContainer = document.createElement('div');
+    this.applyStyles(titleContainer, {
+      marginBottom: '30px',
+      textAlign: 'center'
+    });
+    
+    const title = document.createElement('h1');
+    title.textContent = 'MCP Messenger';
+    this.applyStyles(title, {
+      fontSize: '28px',
+      color: '#343a40',
+      margin: '0 0 10px 0'
+    });
+    
+    const subtitle = document.createElement('p');
+    subtitle.textContent = 'HIPAA-Compliant Secure Messaging';
+    this.applyStyles(subtitle, {
+      fontSize: '14px',
+      color: '#6c757d',
+      margin: '0'
+    });
+    
+    titleContainer.appendChild(title);
+    titleContainer.appendChild(subtitle);
+    loginContainer.appendChild(titleContainer);
+    
+    // Create login form
+    this.loginFormComponent = new LoginForm(loginContainer, this.handleLogin);
+    
+    // Add to container
+    this.container.appendChild(loginContainer);
+  }
+  
+  /**
+   * Render the chat view
+   */
+  renderChatView() {
+    // Create header
+    this.headerComponent = new Header(this.container, {
+      title: 'MCP Messenger',
+      onLogout: this.handleLogout,
+      onViewChange: this.handleViewChange,
+      currentView: this.state.view
+    });
+    
+    // Create layout container
+    const layoutContainer = document.createElement('div');
+    this.applyStyles(layoutContainer, {
+      display: 'flex',
+      flexGrow: '1',
+      height: 'calc(100% - 60px)', // Subtract header height
+      overflow: 'hidden'
+    });
+    
+    // Create channel/conversation sidebar (left)
+    const channelSidebar = document.createElement('div');
+    this.applyStyles(channelSidebar, {
+      width: '200px',
+      flexShrink: '0',
+      backgroundColor: '#343a40',
+      color: 'white',
+      display: 'flex',
+      flexDirection: 'column'
+    });
+    
+    // Channel list header
+    const channelHeader = document.createElement('div');
+    channelHeader.textContent = 'Channels';
+    this.applyStyles(channelHeader, {
+      padding: '12px 16px',
+      fontWeight: 'bold',
+      fontSize: '14px',
+      borderBottom: '1px solid rgba(255,255,255,0.1)'
+    });
+    
+    // Channel list container
+    const channelList = document.createElement('div');
+    this.applyStyles(channelList, {
+      overflowY: 'auto',
+      flexGrow: '1'
+    });
+    
+    // Add available channels
+    const channels = getAvailableChannels();
+    channels.forEach(channel => {
+      const channelItem = document.createElement('div');
+      channelItem.textContent = `# ${channel.name}`;
+      this.applyStyles(channelItem, {
+        padding: '8px 16px',
+        cursor: 'pointer',
+        backgroundColor: this.state.activeChannelId === channel.id ? 'rgba(255,255,255,0.1)' : 'transparent',
+        borderLeft: this.state.activeChannelId === channel.id ? '3px solid #2196F3' : '3px solid transparent'
+      });
       
-      // Update UI
-      this.render();
+      // Add click event
+      channelItem.addEventListener('click', () => {
+        this.handleChannelSelect(channel.id);
+      });
       
-      // Log status change
-      logChatEvent('system', `Connection status changed: ${status}`);
-    } catch (error) {
-      console.error('[AppContainer] Connection status change error:', error);
+      channelList.appendChild(channelItem);
+    });
+    
+    // Direct messages header
+    const dmHeader = document.createElement('div');
+    dmHeader.textContent = 'Direct Messages';
+    this.applyStyles(dmHeader, {
+      padding: '12px 16px',
+      fontWeight: 'bold',
+      fontSize: '14px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      borderBottom: '1px solid rgba(255,255,255,0.1)'
+    });
+    
+    // Add channel elements to sidebar
+    channelSidebar.appendChild(channelHeader);
+    channelSidebar.appendChild(channelList);
+    channelSidebar.appendChild(dmHeader);
+    
+    // Create user status component at bottom of sidebar
+    const statusContainer = document.createElement('div');
+    this.applyStyles(statusContainer, {
+      padding: '10px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      display: 'flex',
+      alignItems: 'center'
+    });
+    
+    // User info
+    const userInfo = document.createElement('div');
+    this.applyStyles(userInfo, {
+      marginLeft: '10px',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      fontSize: '14px'
+    });
+    
+    userInfo.textContent = this.state.user ? this.state.user.username : 'Unknown';
+    
+    // Create user status component
+    this.userStatusComponent = new UserStatus(statusContainer);
+    
+    statusContainer.appendChild(userInfo);
+    channelSidebar.appendChild(statusContainer);
+    
+    // Create main chat area (center)
+    const chatArea = document.createElement('div');
+    this.applyStyles(chatArea, {
+      display: 'flex',
+      flexDirection: 'column',
+      flexGrow: '1',
+      overflow: 'hidden',
+      borderLeft: '1px solid #dee2e6',
+      borderRight: '1px solid #dee2e6'
+    });
+    
+    // Chat header
+    const chatHeader = document.createElement('div');
+    this.applyStyles(chatHeader, {
+      padding: '12px 16px',
+      borderBottom: '1px solid #dee2e6',
+      fontWeight: 'bold',
+      display: 'flex',
+      alignItems: 'center'
+    });
+    
+    // Get current channel or DM info
+    let headerText = 'Select a conversation';
+    
+    if (this.state.activeChannelId) {
+      const activeChannel = channels.find(c => c.id === this.state.activeChannelId);
+      if (activeChannel) {
+        headerText = `# ${activeChannel.name}`;
+      }
+    } else if (this.state.activeDMUserId) {
+      // Would need user service to get user info
+      headerText = 'Direct Message';
     }
+    
+    chatHeader.textContent = headerText;
+    
+    // Connection status indicator
+    const connectionStatus = document.createElement('div');
+    this.state.connectionStatus = getConnectionStatus(); // Update connection status
+    
+    let statusText = 'Disconnected';
+    let statusColor = '#f44336'; // Red
+    
+    if (this.state.connectionStatus === 'connected') {
+      statusText = 'Connected';
+      statusColor = '#4CAF50'; // Green
+    } else if (this.state.connectionStatus === 'connecting') {
+      statusText = 'Connecting...';
+      statusColor = '#FFC107'; // Yellow
+    }
+    
+    connectionStatus.textContent = statusText;
+    this.applyStyles(connectionStatus, {
+      fontSize: '12px',
+      color: statusColor,
+      marginLeft: '10px',
+      padding: '2px 8px',
+      borderRadius: '10px',
+      backgroundColor: 'rgba(0,0,0,0.05)'
+    });
+    
+    chatHeader.appendChild(connectionStatus);
+    chatArea.appendChild(chatHeader);
+    
+    // MessageList and MessageInput components
+    if (this.state.activeChannelId || this.state.activeDMUserId) {
+      // Messages container
+      const messagesContainer = document.createElement('div');
+      this.applyStyles(messagesContainer, {
+        flexGrow: '1',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column'
+      });
+      
+      // Create MessageList component
+      if (this.state.activeChannelId) {
+        this.messageListComponent = new MessageList(messagesContainer, {
+          channelId: this.state.activeChannelId,
+          autoScroll: true
+        });
+      } else if (this.state.activeDMUserId) {
+        this.messageListComponent = new MessageList(messagesContainer, {
+          userId: this.state.activeDMUserId,
+          autoScroll: true
+        });
+      }
+      
+      // Create MessageInput component
+      const inputContainer = document.createElement('div');
+      this.applyStyles(inputContainer, {
+        borderTop: '1px solid #dee2e6'
+      });
+      
+      if (this.state.activeChannelId) {
+        this.messageInputComponent = new MessageInput(inputContainer, {
+          channelId: this.state.activeChannelId,
+          placeholder: 'Type your message...'
+        });
+      } else if (this.state.activeDMUserId) {
+        this.messageInputComponent = new MessageInput(inputContainer, {
+          userId: this.state.activeDMUserId,
+          placeholder: 'Type your message...'
+        });
+      }
+      
+      messagesContainer.appendChild(inputContainer);
+      chatArea.appendChild(messagesContainer);
+    } else {
+      // No active conversation selected
+      const noConversation = document.createElement('div');
+      this.applyStyles(noConversation, {
+        flexGrow: '1',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        color: '#6c757d',
+        textAlign: 'center'
+      });
+      
+      noConversation.textContent = 'Select a channel or direct message to start chatting';
+      chatArea.appendChild(noConversation);
+    }
+    
+    // Create user list sidebar (right)
+    const userSidebar = document.createElement('div');
+    this.applyStyles(userSidebar, {
+      width: '250px',
+      flexShrink: '0',
+      backgroundColor: '#f8f9fa',
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column'
+    });
+    
+    // Create UserList component
+    this.userListComponent = new UserList(userSidebar, {
+      showOfflineUsers: true,
+      enableDirectMessages: true,
+      onUserSelect: this.handleUserSelect
+    });
+    
+    // Add components to layout
+    layoutContainer.appendChild(channelSidebar);
+    layoutContainer.appendChild(chatArea);
+    layoutContainer.appendChild(userSidebar);
+    
+    // Add layout to container
+    this.container.appendChild(layoutContainer);
+  }
+  
+  /**
+   * Render the settings view
+   */
+  renderSettingsView() {
+    // For now, just render a placeholder
+    // Create header
+    this.headerComponent = new Header(this.container, {
+      title: 'Settings',
+      onLogout: this.handleLogout,
+      onViewChange: this.handleViewChange,
+      currentView: this.state.view
+    });
+    
+    // Create settings container
+    const settingsContainer = document.createElement('div');
+    this.applyStyles(settingsContainer, {
+      padding: '20px',
+      overflow: 'auto',
+      height: 'calc(100% - 60px)' // Subtract header height
+    });
+    
+    const title = document.createElement('h2');
+    title.textContent = 'Settings';
+    
+    const content = document.createElement('p');
+    content.textContent = 'Settings view is under construction.';
+    
+    settingsContainer.appendChild(title);
+    settingsContainer.appendChild(content);
+    
+    // Add to container
+    this.container.appendChild(settingsContainer);
+  }
+  
+  /**
+   * Render the admin view
+   */
+  renderAdminView() {
+    // For now, just render a placeholder
+    // Create header
+    this.headerComponent = new Header(this.container, {
+      title: 'Admin Panel',
+      onLogout: this.handleLogout,
+      onViewChange: this.handleViewChange,
+      currentView: this.state.view
+    });
+    
+    // Create admin container
+    const adminContainer = document.createElement('div');
+    this.applyStyles(adminContainer, {
+      padding: '20px',
+      overflow: 'auto',
+      height: 'calc(100% - 60px)' // Subtract header height
+    });
+    
+    const title = document.createElement('h2');
+    title.textContent = 'Admin Panel';
+    
+    const content = document.createElement('p');
+    content.textContent = 'Admin panel is under construction.';
+    
+    adminContainer.appendChild(title);
+    adminContainer.appendChild(content);
+    
+    // Add to container
+    this.container.appendChild(adminContainer);
   }
   
   /**
    * Handle successful login
-   * @param {Object} user - Logged in user
+   * @param {Object} user - Authenticated user
    */
-  handleLoginSuccess(user) {
-    try {
-      console.log('[AppContainer] Login success handler called', user);
-      
-      // Validate user object
-      if (!user || !user.username) {
-        console.error('[AppContainer] Invalid user object received');
-        return;
-      }
-      
-      // Connect to server
-      connectToServer();
-      
-      // Render main UI
-      this.render();
-      
-      // Log successful login
-      logChatEvent('auth', 'User logged in successfully', { 
-        username: user.username,
-        userId: user.id,
-        role: user.role 
-      });
-    } catch (error) {
-      console.error('[AppContainer] Login success handler error:', error);
-      alert('An error occurred during login. Please try again.');
-    }
+  handleLogin(user) {
+    // Authentication is handled by auth context
+    // The auth listener will update the state and trigger a re-render
+    logChatEvent('auth', 'User logged in via login form', {
+      username: user.username
+    });
+  }
+  
+  /**
+   * Handle logout
+   */
+  handleLogout() {
+    // Logout user through auth context
+    authContext.logout('user_initiated');
+    
+    logChatEvent('auth', 'User logged out via header');
   }
   
   /**
    * Handle channel selection
-   * @param {Object} channel - Selected channel
+   * @param {string} channelId - Selected channel ID
    */
-  handleChannelSelect(channel) {
-    try {
-      console.log(`[AppContainer] Channel selected: ${channel.id}`);
-      this.selectedChannel = channel.id;
-      this.render();
-    } catch (error) {
-      console.error('[AppContainer] Channel selection error:', error);
-    }
+  handleChannelSelect(channelId) {
+    // Set active channel
+    this.state.activeChannelId = channelId;
+    this.state.activeDMUserId = null;
+    
+    // Update channel service
+    setActiveChannel(channelId);
+    
+    // Re-render
+    this.render();
+    
+    logChatEvent('ui', 'Channel selected', {
+      channelId
+    });
   }
   
   /**
@@ -244,243 +610,79 @@ class AppContainer {
    * @param {Object} user - Selected user
    */
   handleUserSelect(user) {
-    try {
-      // TODO: Implement direct messaging
-      console.log(`[AppContainer] Selected user for direct message: ${user.username}`);
-      
-      // Log user selection
-      logChatEvent('ui', 'Selected user for direct message', { targetUser: user.username });
-    } catch (error) {
-      console.error('[AppContainer] User selection error:', error);
-    }
+    // Set active direct message
+    this.state.activeDMUserId = user.id;
+    this.state.activeChannelId = null;
+    
+    // Re-render
+    this.render();
+    
+    logChatEvent('ui', 'User selected for direct message', {
+      userId: user.id
+    });
   }
   
   /**
-   * Switch between application views
-   * @param {string} view - View to switch to ('chat', 'admin', 'settings')
+   * Handle view change
+   * @param {string} view - New view to display
    */
-  switchView(view) {
-    try {
-      if (this.currentView !== view) {
-        this.currentView = view;
-        
-        // Re-render the application
-        this.render();
-        
-        // Log view change
-        logChatEvent('ui', `Switched to ${view} view`);
-      }
-    } catch (error) {
-      console.error('[AppContainer] View switch error:', error);
-    }
-  }
-  
-  /**
-   * Toggle user list visibility
-   */
-  toggleUserList() {
-    try {
-      this.showUserList = !this.showUserList;
+  handleViewChange(view) {
+    if (this.state.view !== view) {
+      this.state.view = view;
       this.render();
       
-      // Log toggle
-      logChatEvent('ui', `${this.showUserList ? 'Showed' : 'Hid'} user list`);
-    } catch (error) {
-      console.error('[AppContainer] Toggle user list error:', error);
-    }
-  }
-  
-  /**
-   * Handle logout process
-   */
-  handleLogout() {
-    try {
-      // Call logout service
-      logout();
-      
-      // Reset application state
-      this.currentView = 'chat';
-      this.showUserList = true;
-      this.selectedChannel = 'general';
-      
-      // Log logout event
-      logChatEvent('auth', 'User logged out');
-      
-      // Clear the app element content
-      if (this.appElement) {
-        this.appElement.innerHTML = '';
-      }
-      
-      // Render login form
-      this.loginFormComponent = new LoginForm(this.appElement, this.handleLoginSuccess);
-    } catch (error) {
-      console.error('[AppContainer] Logout error:', error);
-    }
-  }
-  
-  /**
-   * Render the application
-   */
-  render() {
-    try {
-      console.log('Rendering application, authenticated:', isAuthenticated());
-      
-      if (!this.appElement) return;
-      
-      // Clear existing content
-      this.appElement.innerHTML = '';
-      
-      // Check if authenticated
-      const isUserAuthenticated = isAuthenticated();
-      
-      if (!isUserAuthenticated) {
-        // Show login form when not authenticated
-        this.loginFormComponent = new LoginForm(this.appElement, this.handleLoginSuccess);
-        return;
-      }
-      
-      // Get current user
-      const currentUser = getCurrentUser();
-      console.log('Current user:', currentUser);
-      
-      // Validate current user
-      if (!currentUser) {
-        console.error('[AppContainer] No current user found');
-        this.handleLogout();
-        return;
-      }
-      
-      // Use the Header component or custom header
-      let headerElement;
-      try {
-        // First try to use createCustomHeader from the appcontainer
-        headerElement = createCustomHeader(null, {
-          currentUser,
-          connectionStatus: this.connectionStatus,
-          activeView: this.currentView,
-          onViewSwitch: this.switchView,
-          onToggleUserList: this.toggleUserList,
-          onLogout: this.handleLogout
-        });
-      } catch (headerError) {
-        console.warn('[AppContainer] Error using createCustomHeader, falling back to Header component:', headerError);
-        
-        // Fallback to using the Header component directly
-        this.headerComponent = new Header({
-          user: currentUser,
-          connectionStatus: this.connectionStatus,
-          activeView: this.currentView,
-          onViewSwitch: this.switchView,
-          onToggleUserList: this.toggleUserList
-        });
-        headerElement = this.headerComponent.render();
-      }
-      
-      this.appElement.appendChild(headerElement);
-      
-      // Create main content area based on current view
-      const mainContent = document.createElement('div');
-      mainContent.className = 'app-content';
-      this.applyStyles(mainContent, {
-        display: 'flex',
-        flex: '1',
-        overflow: 'hidden',
-        backgroundColor: '#f5f7f9', // Light gray background
-        width: '100%'
+      logChatEvent('ui', 'View changed', {
+        view
       });
-      
-      // Render the appropriate view
-      try {
-        if (this.currentView === 'chat') {
-          // Chat view - channels, messages, and users
-          renderChatView(mainContent, {
-            showUserList: this.showUserList,
-            selectedChannel: this.selectedChannel,
-            mockChannels: this.mockData.channels,
-            mockUsers: this.mockData.users,
-            onChannelSelect: this.handleChannelSelect,
-            onUserSelect: this.handleUserSelect,
-            toggleUserList: this.toggleUserList
-          });
-        } else if (this.currentView === 'admin') {
-          // Admin view with management components
-          renderAdminView(mainContent, {
-            currentUser
-          });
-        } else if (this.currentView === 'settings') {
-          // Settings view
-          renderSettingsView(mainContent, {
-            onLogout: this.handleLogout
-          });
-        }
-      } catch (viewError) {
-        console.error('[AppContainer] Error rendering view:', viewError);
-        // Simple fallback content in case renderers fail
-        mainContent.innerHTML = '<div style="padding: 20px; text-align: center;">Error loading view. Please try again.</div>';
-      }
-      
-      this.appElement.appendChild(mainContent);
-    } catch (error) {
-      console.error('[AppContainer] Render error:', error);
-      this.renderErrorState(error);
     }
   }
   
   /**
-   * Render error state
-   * @param {Error} error - Initialization error
+   * Clean up components
    */
-  renderErrorState(error) {
-    if (!this.appElement) return;
+  cleanupComponents() {
+    // Destroy component instances to prevent memory leaks
+    if (this.headerComponent) {
+      if (typeof this.headerComponent.destroy === 'function') {
+        this.headerComponent.destroy();
+      }
+      this.headerComponent = null;
+    }
     
-    this.appElement.innerHTML = '';
+    if (this.messageListComponent) {
+      if (typeof this.messageListComponent.destroy === 'function') {
+        this.messageListComponent.destroy();
+      }
+      this.messageListComponent = null;
+    }
     
-    const errorContainer = document.createElement('div');
-    this.applyStyles(errorContainer, {
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      padding: '20px',
-      textAlign: 'center',
-      backgroundColor: '#f8d7da',
-      color: '#721c24'
-    });
+    if (this.messageInputComponent) {
+      if (typeof this.messageInputComponent.destroy === 'function') {
+        this.messageInputComponent.destroy();
+      }
+      this.messageInputComponent = null;
+    }
     
-    const errorIcon = document.createElement('div');
-    errorIcon.textContent = '⚠️';
-    this.applyStyles(errorIcon, {
-      fontSize: '48px',
-      marginBottom: '16px'
-    });
+    if (this.userListComponent) {
+      if (typeof this.userListComponent.destroy === 'function') {
+        this.userListComponent.destroy();
+      }
+      this.userListComponent = null;
+    }
     
-    const errorTitle = document.createElement('h2');
-    errorTitle.textContent = 'Application Initialization Failed';
+    if (this.userStatusComponent) {
+      if (typeof this.userStatusComponent.destroy === 'function') {
+        this.userStatusComponent.destroy();
+      }
+      this.userStatusComponent = null;
+    }
     
-    const errorMessage = document.createElement('p');
-    errorMessage.textContent = error.message || 'An unexpected error occurred.';
-    
-    const retryButton = document.createElement('button');
-    retryButton.textContent = 'Retry';
-    this.applyStyles(retryButton, {
-      backgroundColor: '#007bff',
-      color: 'white',
-      border: 'none',
-      padding: '10px 20px',
-      borderRadius: '4px',
-      marginTop: '16px',
-      cursor: 'pointer'
-    });
-    
-    retryButton.addEventListener('click', () => this.initialize());
-    
-    errorContainer.appendChild(errorIcon);
-    errorContainer.appendChild(errorTitle);
-    errorContainer.appendChild(errorMessage);
-    errorContainer.appendChild(retryButton);
-    
-    this.appElement.appendChild(errorContainer);
+    if (this.loginFormComponent) {
+      if (typeof this.loginFormComponent.destroy === 'function') {
+        this.loginFormComponent.destroy();
+      }
+      this.loginFormComponent = null;
+    }
   }
   
   /**
@@ -493,34 +695,31 @@ class AppContainer {
   }
   
   /**
-   * Clean up resources
+   * Cleanup resources
    */
   destroy() {
     try {
-      // Unsubscribe from events
-      if (this.unsubscribeConnectionStatus) {
-        this.unsubscribeConnectionStatus();
-      }
-      
       // Clean up components
-      if (this.notificationSystem) {
-        this.notificationSystem.destroy();
+      this.cleanupComponents();
+      
+      // Unsubscribe from auth context
+      if (this.authUnsubscribe) {
+        this.authUnsubscribe();
+        this.authUnsubscribe = null;
       }
       
-      // Remove from DOM
-      if (this.appElement && this.appElement.parentNode) {
-        this.appElement.parentNode.removeChild(this.appElement);
+      // Disconnect from server
+      disconnectFromServer();
+      
+      // Clear container
+      if (this.container) {
+        this.container.innerHTML = '';
       }
       
-      // Remove global reference
-      if (window.toggleChatUI === this.toggleChatVisibility) {
-        delete window.toggleChatUI;
-      }
-      
-      // Log destruction
-      logChatEvent('system', 'Application destroyed');
+      logChatEvent('system', 'App container destroyed');
     } catch (error) {
-      console.error('[AppContainer] Destruction error:', error);
+      console.error('[AppContainer] Destroy error:', error);
+      logChatEvent('error', 'App container destroy error', { error: error.message });
     }
   }
 }

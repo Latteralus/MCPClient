@@ -1,52 +1,31 @@
-// chat/components/app/NotificationSystem.js
+// components/app/NotificationSystem.js
 // Notification system for HIPAA-compliant chat
 
 import { logChatEvent } from '../../utils/logger.js';
-import { getConfig } from '../../config.js';
-import { addMessageListener } from '../../services/messageService.js';
-import { getCurrentUser } from '../../services/auth';
+import { addMessageListener } from '../../services/api/messages.js';
+import { addConnectionStatusListener } from '../../services/websocket/connection.js';
+import authContext from '../../contexts/AuthContext.js';
 
 /**
- * Notification System Component
- * Handles notifications for new messages and system events
+ * Notification System
+ * Manages system notifications and alerts
  */
 class NotificationSystem {
-  /**
-   * Create a new NotificationSystem
-   * @param {Object} options - Notification system options
-   * @param {boolean} options.sound - Enable notification sounds
-   * @param {string} options.soundUrl - URL for notification sound
-   * @param {boolean} options.desktop - Enable desktop notifications
-   * @param {Function} options.onNotificationClick - Callback for notification clicks
-   */
-  constructor(options = {}) {
-    this.options = {
-      sound: getConfig('ui.notifications.sound', true),
-      soundUrl: getConfig('ui.notifications.soundUrl', null),
-      desktop: getConfig('ui.notifications.enabled', true),
-      onNotificationClick: null,
-      ...options
-    };
-    
-    this.notificationCount = 0;
-    this.notificationQueue = [];
-    this.processingQueue = false;
-    this.enabled = true;
-    this.focused = document.hasFocus();
-    this.unsubscribeMessageListener = null;
-    this.notificationPermission = 'default';
-    this.audio = null;
+  constructor() {
+    this.notifications = [];
+    this.container = null;
+    this.unreadCount = 0;
+    this.messageListener = null;
+    this.connectionListener = null;
+    this.authListener = null;
     
     // Bind methods
-    this.initialize = this.initialize.bind(this);
-    this.handleMessage = this.handleMessage.bind(this);
     this.showNotification = this.showNotification.bind(this);
-    this.playNotificationSound = this.playNotificationSound.bind(this);
-    this.handleVisibilityChange = this.handleVisibilityChange.bind(this);
-    this.processBatchedNotifications = this.processBatchedNotifications.bind(this);
-    this.requestNotificationPermission = this.requestNotificationPermission.bind(this);
+    this.handleNewMessages = this.handleNewMessages.bind(this);
+    this.handleConnectionStatus = this.handleConnectionStatus.bind(this);
+    this.updateUnreadCount = this.updateUnreadCount.bind(this);
     
-    // Initialize component
+    // Initialize
     this.initialize();
   }
   
@@ -55,376 +34,550 @@ class NotificationSystem {
    */
   initialize() {
     try {
+      console.log('[NotificationSystem] Initializing...');
+      
+      // Create container for notifications
+      this.container = document.createElement('div');
+      this.container.className = 'notification-container';
+      this.applyStyles(this.container, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        width: '300px',
+        maxWidth: '100%',
+        zIndex: '10001',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end'
+      });
+      
+      // Add to document
+      document.body.appendChild(this.container);
+      
+      // Listen for new messages
+      this.messageListener = addMessageListener(this.handleNewMessages);
+      
+      // Listen for connection status changes
+      this.connectionListener = addConnectionStatusListener(this.handleConnectionStatus);
+      
+      // Listen for auth state changes
+      this.authListener = authContext.subscribe(authState => {
+        if (!authState.authenticated) {
+          // Clear notifications on logout
+          this.notifications = [];
+          this.unreadCount = 0;
+          this.updateUnreadCount();
+          this.container.innerHTML = '';
+        }
+      });
+      
       // Check if browser supports notifications
       if ('Notification' in window) {
-        this.notificationPermission = Notification.permission;
-        
-        // Request permission if not granted
-        if (this.notificationPermission !== 'granted' && this.options.desktop) {
-          // We'll request when user interacts with the page
-          document.addEventListener('click', this.requestNotificationPermission, { once: true });
+        // Request permission if not already granted
+        if (Notification.permission !== 'granted') {
+          this.showNotification({
+            title: 'Enable Notifications',
+            message: 'Would you like to enable desktop notifications?',
+            type: 'info',
+            actions: [
+              {
+                label: 'Enable',
+                onClick: () => {
+                  Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                      this.showNotification({
+                        title: 'Notifications Enabled',
+                        message: 'You will now receive desktop notifications',
+                        type: 'success',
+                        duration: 3000
+                      });
+                    }
+                  });
+                }
+              }
+            ],
+            duration: 10000
+          });
         }
       }
       
-      // Setup notification sound if enabled
-      if (this.options.sound) {
-        this.audio = new Audio(this.options.soundUrl || this.getDefaultSoundUrl());
-        
-        // Preload audio
-        this.audio.load();
-      }
-      
-      // Set up visibility change listener
-      document.addEventListener('visibilitychange', this.handleVisibilityChange);
-      
-      // Set up focus/blur listeners
-      window.addEventListener('focus', () => {
-        this.focused = true;
-        
-        // Reset notification count when window gets focus
-        this.resetNotificationCount();
-      });
-      
-      window.addEventListener('blur', () => {
-        this.focused = false;
-      });
-      
-      // Set up message listener
-      this.unsubscribeMessageListener = addMessageListener(this.handleMessage);
-      
-      // Log initialization
-      logChatEvent('ui', 'Notification system initialized');
-      
-      console.log('[CRM Extension] Notification system initialized');
+      logChatEvent('system', 'Notification system initialized');
     } catch (error) {
-      console.error('[CRM Extension] Error initializing notification system:', error);
+      console.error('[NotificationSystem] Initialization error:', error);
+      logChatEvent('error', 'Notification system initialization error', { error: error.message });
     }
   }
   
   /**
-   * Get default notification sound URL
-   * @returns {string} URL for default notification sound
+   * Show a notification
+   * @param {Object} options - Notification options
+   * @param {string} options.title - Notification title
+   * @param {string} options.message - Notification message
+   * @param {string} options.type - Notification type (info, success, warning, error)
+   * @param {number} options.duration - Duration in milliseconds (0 for no auto-close)
+   * @param {Array} options.actions - Array of action buttons
+   * @returns {Object} Notification object
    */
-  getDefaultSoundUrl() {
-    // Use a data URI for a simple notification sound
-    // This is a very short, subtle "ping" sound as a data URI
-    return 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTGFTb25vdGhlcXVlLm9yZwBURU5DAAAAHQAAA1N3aXRjaCBQbHVzIMKpIE5DSCBTb2Z0d2FyZQBUSVQyAAAABgAAAzIyMzUAVFNTRQAAAA8AAANMYXZmNTguMTYuMTAwAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsRbAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQMSkAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
-  }
-  
-  /**
-   * Request notification permission
-   */
-  requestNotificationPermission() {
-    if ('Notification' in window && this.notificationPermission !== 'granted') {
-      Notification.requestPermission().then(permission => {
-        this.notificationPermission = permission;
-        
-        // Log permission result
-        logChatEvent('ui', `Notification permission ${permission}`);
-      });
-    }
-  }
-  
-  /**
-   * Handle visibility change events
-   */
-  handleVisibilityChange() {
-    if (document.visibilityState === 'visible') {
-      this.focused = true;
-      
-      // Reset notification count when document becomes visible
-      this.resetNotificationCount();
-    } else {
-      this.focused = false;
-    }
-  }
-  
-  /**
-   * Handle incoming messages
-   * @param {Array} messages - Array of new messages
-   */
-  handleMessage(messages) {
-    if (!this.enabled || !messages || messages.length === 0) return;
-    
-    // Get current user
-    const currentUser = getCurrentUser();
-    
-    if (!currentUser) return;
-    
-    // Filter messages not from the current user
-    const otherUserMessages = messages.filter(message => 
-      message.sender !== currentUser.username && 
-      message.sender !== currentUser.id
-    );
-    
-    if (otherUserMessages.length === 0) return;
-    
-    // Add messages to queue
-    this.notificationQueue.push(...otherUserMessages);
-    
-    // Increment notification count
-    this.notificationCount += otherUserMessages.length;
-    
-    // Dispatch event for other components to update UI
-    this.dispatchNotificationCountEvent();
-    
-    // Process queued notifications
-    if (!this.processingQueue) {
-      this.processBatchedNotifications();
-    }
-  }
-  
-  /**
-   * Process batched notifications
-   */
-  processBatchedNotifications() {
-    if (this.notificationQueue.length === 0) {
-      this.processingQueue = false;
-      return;
-    }
-    
-    this.processingQueue = true;
-    
-    // Get next message
-    const message = this.notificationQueue.shift();
-    
-    // Show notification
-    if (!this.focused) {
-      this.showNotification(message);
-    }
-    
-    // Play notification sound if enabled (only once per batch)
-    if (this.options.sound && this.notificationQueue.length === 0) {
-      this.playNotificationSound();
-    }
-    
-    // Continue processing queue with small delay to avoid notification flood
-    setTimeout(this.processBatchedNotifications, 300);
-  }
-  
-  /**
-   * Show a desktop notification
-   * @param {Object} message - Message to show notification for
-   */
-  showNotification(message) {
+  showNotification(options) {
     try {
-      // Skip if desktop notifications are disabled or not supported
-      if (!this.options.desktop || !('Notification' in window)) return;
-      
-      // Skip if permission not granted
-      if (this.notificationPermission !== 'granted') return;
-      
-      // Create notification title
-      const title = `New message from ${message.senderDisplayName || message.sender}`;
-      
-      // HIPAA compliance: Don't show full message contents in notification
-      // Instead, create a generic notification that doesn't include PHI
-      const options = {
-        body: 'You have received a new message',
-        icon: this.getIconUrl(message.sender),
-        tag: `chat-msg-${message.id}`,
-        requireInteraction: false,
-        silent: true // We handle sound separately
+      const defaults = {
+        title: 'Notification',
+        message: '',
+        type: 'info',
+        duration: 5000, // 5 seconds
+        actions: []
       };
       
-      // Create and show notification
-      const notification = new Notification(title, options);
+      const settings = { ...defaults, ...options };
       
-      // Add click handler
-      notification.onclick = () => {
-        // Focus window
-        window.focus();
-        
-        // Call click callback if provided
-        if (this.options.onNotificationClick && typeof this.options.onNotificationClick === 'function') {
-          this.options.onNotificationClick(message);
-        }
-        
-        // Close notification
-        notification.close();
+      // Create notification element
+      const notification = document.createElement('div');
+      notification.className = `notification notification-${settings.type}`;
+      
+      // Apply base styles
+      this.applyStyles(notification, {
+        backgroundColor: '#fff',
+        marginBottom: '10px',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
+        borderRadius: '4px',
+        overflow: 'hidden',
+        width: '300px',
+        animation: 'slide-in 0.3s ease',
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        opacity: '0',
+        transform: 'translateX(100%)',
+        transition: 'opacity 0.3s ease, transform 0.3s ease'
+      });
+      
+      // Type-specific styles - left border color
+      const borderColors = {
+        info: '#2196F3',    // Blue
+        success: '#4CAF50', // Green
+        warning: '#FFC107', // Yellow
+        error: '#F44336'    // Red
       };
+      
+      notification.style.borderLeft = `4px solid ${borderColors[settings.type] || borderColors.info}`;
+      
+      // Header
+      const header = document.createElement('div');
+      this.applyStyles(header, {
+        padding: '10px 15px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderBottom: settings.message ? '1px solid #eee' : 'none'
+      });
+      
+      // Title
+      const title = document.createElement('div');
+      title.textContent = settings.title;
+      this.applyStyles(title, {
+        fontWeight: 'bold',
+        color: '#333'
+      });
+      
+      // Close button
+      const closeButton = document.createElement('button');
+      closeButton.innerHTML = '&times;';
+      this.applyStyles(closeButton, {
+        background: 'none',
+        border: 'none',
+        color: '#999',
+        fontSize: '20px',
+        cursor: 'pointer',
+        padding: '0',
+        marginLeft: '10px'
+      });
+      
+      closeButton.addEventListener('click', () => {
+        this.removeNotification(notification);
+      });
+      
+      header.appendChild(title);
+      header.appendChild(closeButton);
+      notification.appendChild(header);
+      
+      // Message (if provided)
+      if (settings.message) {
+        const messageElement = document.createElement('div');
+        messageElement.textContent = settings.message;
+        this.applyStyles(messageElement, {
+          padding: '10px 15px',
+          color: '#666'
+        });
+        notification.appendChild(messageElement);
+      }
+      
+      // Actions (if provided)
+      if (settings.actions && settings.actions.length > 0) {
+        const actionsContainer = document.createElement('div');
+        this.applyStyles(actionsContainer, {
+          padding: '10px 15px',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          borderTop: '1px solid #eee'
+        });
+        
+        settings.actions.forEach(action => {
+          const button = document.createElement('button');
+          button.textContent = action.label;
+          this.applyStyles(button, {
+            backgroundColor: '#f5f5f5',
+            border: '1px solid #ddd',
+            borderRadius: '3px',
+            padding: '5px 10px',
+            marginLeft: '5px',
+            cursor: 'pointer',
+            fontSize: '12px'
+          });
+          
+          button.addEventListener('click', () => {
+            if (typeof action.onClick === 'function') {
+              action.onClick();
+            }
+            this.removeNotification(notification);
+          });
+          
+          actionsContainer.appendChild(button);
+        });
+        
+        notification.appendChild(actionsContainer);
+      }
+      
+      // Add to container
+      this.container.appendChild(notification);
+      
+      // Store notification in array
+      const notificationObj = {
+        id: Date.now().toString(),
+        element: notification,
+        type: settings.type,
+        title: settings.title,
+        message: settings.message,
+        timestamp: new Date()
+      };
+      
+      this.notifications.push(notificationObj);
       
       // Log notification
-      logChatEvent('ui', 'Showed desktop notification', { sender: message.sender });
-    } catch (error) {
-      console.error('[CRM Extension] Error showing notification:', error);
-    }
-  }
-  
-  /**
-   * Play notification sound
-   */
-  playNotificationSound() {
-    try {
-      if (!this.options.sound || !this.audio) return;
-      
-      // Reset audio to start
-      this.audio.currentTime = 0;
-      
-      // Play notification sound
-      this.audio.play().catch(error => {
-        // Browser may block autoplay without user interaction
-        console.warn('[CRM Extension] Could not play notification sound:', error);
+      logChatEvent('notification', 'Notification shown', {
+        type: settings.type,
+        title: settings.title
       });
+      
+      // Show notification with animation
+      setTimeout(() => {
+        this.applyStyles(notification, {
+          opacity: '1',
+          transform: 'translateX(0)'
+        });
+      }, 10);
+      
+      // Set up auto-close if duration is specified
+      if (settings.duration > 0) {
+        setTimeout(() => {
+          this.removeNotification(notification);
+        }, settings.duration);
+      }
+      
+      // Show browser notification if enabled and not focused
+      this.showBrowserNotification(settings);
+      
+      return notificationObj;
     } catch (error) {
-      console.error('[CRM Extension] Error playing notification sound:', error);
+      console.error('[NotificationSystem] Show notification error:', error);
+      return null;
     }
   }
   
   /**
-   * Get icon URL for notification
-   * @param {string} sender - Message sender
-   * @returns {string} Icon URL
+   * Remove a notification
+   * @param {HTMLElement} notificationElement - Notification element to remove
    */
-  getIconUrl(sender) {
-    // In a real implementation, this would return a user avatar
-    // For now, return a generic icon
-    return 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4Ij48Y2lyY2xlIGN4PSIyNCIgY3k9IjI0IiByPSIyNCIgZmlsbD0iIzQyOTVmMyIvPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik0yNCAyMGMzLjMgMCA2LTIuNyA2LTZzLTIuNy02LTYtNi02IDIuNy02IDYgMi43IDYgNiA2em0wIDRjLTQgMC0xMiAyLTEyIDZWMzRoMjR2LTRjMC00LTgtNi0xMi02eiIvPjwvc3ZnPg==';
-  }
-  
-  /**
-   * Get current notification count
-   * @returns {number} Notification count
-   */
-  getNotificationCount() {
-    return this.notificationCount;
-  }
-  
-  /**
-   * Reset notification count
-   */
-  resetNotificationCount() {
-    if (this.notificationCount === 0) return;
-    
-    this.notificationCount = 0;
-    
-    // Dispatch event for other components to update UI
-    this.dispatchNotificationCountEvent();
-    
-    // Log reset
-    logChatEvent('ui', 'Reset notification count');
-  }
-  
-  /**
-   * Dispatch notification count event
-   */
-  dispatchNotificationCountEvent() {
-    // Create custom event for notification count update
-    const event = new CustomEvent('chat_notification_count', {
-      detail: {
-        count: this.notificationCount
+  removeNotification(notificationElement) {
+    try {
+      // Find notification in array
+      const index = this.notifications.findIndex(n => n.element === notificationElement);
+      
+      if (index !== -1) {
+        // Remove from array
+        const notification = this.notifications.splice(index, 1)[0];
+        
+        // Animate out
+        this.applyStyles(notificationElement, {
+          opacity: '0',
+          transform: 'translateX(100%)'
+        });
+        
+        // Remove from DOM after animation
+        setTimeout(() => {
+          if (notificationElement.parentNode) {
+            notificationElement.parentNode.removeChild(notificationElement);
+          }
+        }, 300);
       }
+    } catch (error) {
+      console.error('[NotificationSystem] Remove notification error:', error);
+    }
+  }
+  
+  /**
+   * Show browser notification
+   * @param {Object} options - Notification options
+   */
+  showBrowserNotification(options) {
+    try {
+      // Only show if permission granted, the window is not focused, and title/message are provided
+      if (
+        'Notification' in window && 
+        Notification.permission === 'granted' && 
+        !document.hasFocus() && 
+        options.title
+      ) {
+        const notification = new Notification(options.title, {
+          body: options.message || '',
+          icon: '/icons/logo-64.png' // You can replace this with your app icon
+        });
+        
+        // Close after a few seconds
+        setTimeout(() => {
+          notification.close();
+        }, options.duration || 5000);
+        
+        // Handle click
+        notification.onclick = function() {
+          window.focus();
+          this.close();
+        };
+      }
+    } catch (error) {
+      console.error('[NotificationSystem] Browser notification error:', error);
+    }
+  }
+  
+  /**
+   * Handle new messages
+   * @param {Array} updates - Message updates
+   */
+  handleNewMessages(updates) {
+    try {
+      if (!updates || !updates.length) return;
+      
+      // Filter for new messages (not from current user)
+      const currentUser = authContext.getCurrentUser();
+      if (!currentUser) return;
+      
+      const newMessages = updates.filter(update => {
+        if (update.type !== 'new') return false;
+        const message = update.message;
+        return message && message.sender !== currentUser.id;
+      });
+      
+      if (newMessages.length > 0) {
+        // Increment unread count
+        this.unreadCount += newMessages.length;
+        this.updateUnreadCount();
+        
+        // Show notification for the first message
+        const firstMessage = newMessages[0].message;
+        let senderName = firstMessage.sender;
+        let notificationTitle = 'New Message';
+        let notificationMessage = firstMessage.text;
+        
+        // Simplify message if it's too long
+        if (notificationMessage && notificationMessage.length > 50) {
+          notificationMessage = notificationMessage.substring(0, 47) + '...';
+        }
+        
+        // Add count if more than one message
+        if (newMessages.length > 1) {
+          notificationMessage += ` (+ ${newMessages.length - 1} more)`;
+        }
+        
+        this.showNotification({
+          title: notificationTitle,
+          message: notificationMessage,
+          type: 'info',
+          duration: 5000
+        });
+      }
+    } catch (error) {
+      console.error('[NotificationSystem] Handle new messages error:', error);
+    }
+  }
+  
+  /**
+   * Handle connection status changes
+   * @param {string} status - Connection status
+   */
+  handleConnectionStatus(status) {
+    try {
+      // Only show notifications for significant status changes
+      if (status === 'connected') {
+        this.showNotification({
+          title: 'Connected',
+          message: 'Connected to server',
+          type: 'success',
+          duration: 3000
+        });
+      } else if (status === 'disconnected') {
+        this.showNotification({
+          title: 'Disconnected',
+          message: 'Connection to server lost. Reconnecting...',
+          type: 'warning',
+          duration: 0 // No auto-close
+        });
+      }
+    } catch (error) {
+      console.error('[NotificationSystem] Handle connection status error:', error);
+    }
+  }
+  
+  /**
+   * Update the unread message count
+   */
+  updateUnreadCount() {
+    try {
+      // Dispatch event for components to update UI
+      const event = new CustomEvent('chat_notification_count', {
+        detail: { count: this.unreadCount }
+      });
+      
+      window.dispatchEvent(event);
+      
+      // Change favicon if unread messages (would need to implement)
+      // this.updateFavicon();
+    } catch (error) {
+      console.error('[NotificationSystem] Update unread count error:', error);
+    }
+  }
+  
+  /**
+   * Reset the unread count
+   */
+  resetUnreadCount() {
+    this.unreadCount = 0;
+    this.updateUnreadCount();
+  }
+  
+  /**
+   * Show an error notification
+   * @param {string} message - Error message
+   * @param {string} title - Error title
+   */
+  showError(message, title = 'Error') {
+    this.showNotification({
+      title,
+      message,
+      type: 'error',
+      duration: 10000 // 10 seconds
     });
-    
-    // Dispatch event
-    window.dispatchEvent(event);
   }
   
   /**
-   * Enable or disable notifications
-   * @param {boolean} enabled - Whether notifications are enabled
+   * Show a success notification
+   * @param {string} message - Success message
+   * @param {string} title - Success title
    */
-  setEnabled(enabled) {
-    this.enabled = !!enabled;
-    
-    // Log state change
-    logChatEvent('ui', `Notifications ${enabled ? 'enabled' : 'disabled'}`);
+  showSuccess(message, title = 'Success') {
+    this.showNotification({
+      title,
+      message,
+      type: 'success',
+      duration: 5000 // 5 seconds
+    });
   }
   
   /**
-   * Set notification sound
-   * @param {boolean} enabled - Whether sound is enabled
-   * @param {string} soundUrl - URL for notification sound
+   * Show an info notification
+   * @param {string} message - Info message
+   * @param {string} title - Info title
    */
-  setSound(enabled, soundUrl = null) {
-    this.options.sound = !!enabled;
-    
-    if (enabled && soundUrl) {
-      this.options.soundUrl = soundUrl;
-      
-      // Update audio element
-      if (this.audio) {
-        this.audio.src = soundUrl;
-        this.audio.load();
-      } else {
-        this.audio = new Audio(soundUrl);
-        this.audio.load();
-      }
-    }
-    
-    // Log sound setting change
-    logChatEvent('ui', `Notification sound ${enabled ? 'enabled' : 'disabled'}`);
+  showInfo(message, title = 'Information') {
+    this.showNotification({
+      title,
+      message,
+      type: 'info',
+      duration: 5000 // 5 seconds
+    });
   }
   
   /**
-   * Show a system notification (for non-message events)
-   * @param {string} title - Notification title
-   * @param {string} message - Notification message
+   * Show a warning notification
+   * @param {string} message - Warning message
+   * @param {string} title - Warning title
    */
-  showSystemNotification(title, message) {
-    try {
-      // Skip if desktop notifications are disabled or not supported
-      if (!this.options.desktop || !('Notification' in window)) return;
-      
-      // Skip if permission not granted
-      if (this.notificationPermission !== 'granted') return;
-      
-      // Create notification options
-      const options = {
-        body: message,
-        icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4Ij48Y2lyY2xlIGN4PSIyNCIgY3k9IjI0IiByPSIyNCIgZmlsbD0iIzI4YTc0NSIvPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik0yMCAzNGwtOS05IDMtMyA2IDYgMTQtMTQgMyAzeiIvPjwvc3ZnPg==',
-        tag: `chat-system-${Date.now()}`,
-        requireInteraction: false,
-        silent: true // We handle sound separately
-      };
-      
-      // Create and show notification
-      const notification = new Notification(title, options);
-      
-      // Add click handler
-      notification.onclick = () => {
-        // Focus window
-        window.focus();
-        
-        // Close notification
-        notification.close();
-      };
-      
-      // Play sound if enabled
-      if (this.options.sound) {
-        this.playNotificationSound();
-      }
-      
-      // Log notification
-      logChatEvent('ui', 'Showed system notification', { title });
-    } catch (error) {
-      console.error('[CRM Extension] Error showing system notification:', error);
-    }
+  showWarning(message, title = 'Warning') {
+    this.showNotification({
+      title,
+      message,
+      type: 'warning',
+      duration: 7000 // 7 seconds
+    });
   }
   
   /**
-   * Destroy the notification system
+   * Apply CSS styles to an element
+   * @param {HTMLElement} element - Element to style
+   * @param {Object} styles - Styles to apply
+   */
+  applyStyles(element, styles) {
+    Object.assign(element.style, styles);
+  }
+  
+  /**
+   * Cleanup resources
    */
   destroy() {
-    // Remove event listeners
-    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-    window.removeEventListener('focus', () => { this.focused = true; });
-    window.removeEventListener('blur', () => { this.focused = false; });
-    
-    // Unsubscribe from message listener
-    if (this.unsubscribeMessageListener) {
-      this.unsubscribeMessageListener();
+    try {
+      // Remove event listeners
+      if (this.messageListener) {
+        this.messageListener();
+        this.messageListener = null;
+      }
+      
+      if (this.connectionListener) {
+        this.connectionListener();
+        this.connectionListener = null;
+      }
+      
+      if (this.authListener) {
+        this.authListener();
+        this.authListener = null;
+      }
+      
+      // Remove notifications container
+      if (this.container && this.container.parentNode) {
+        this.container.parentNode.removeChild(this.container);
+      }
+      
+      this.notifications = [];
+      this.container = null;
+      
+      logChatEvent('system', 'Notification system destroyed');
+    } catch (error) {
+      console.error('[NotificationSystem] Destroy error:', error);
     }
-    
-    // Clear audio
-    if (this.audio) {
-      this.audio.pause();
-      this.audio = null;
-    }
-    
-    // Log destruction
-    logChatEvent('ui', 'Notification system destroyed');
   }
 }
+
+// CSS animation for notifications
+const styleElement = document.createElement('style');
+styleElement.textContent = `
+  @keyframes slide-in {
+    from {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+`;
+document.head.appendChild(styleElement);
 
 export default NotificationSystem;

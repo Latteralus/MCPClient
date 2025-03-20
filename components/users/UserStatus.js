@@ -1,9 +1,10 @@
 // chat/components/users/UserStatus.js
 // User status component for HIPAA-compliant chat
 
-import { getCurrentUser, isAuthenticated } from '../../services/auth';
-import { setUserStatus } from '../../services/userService.js';
+import authContext from '../../contexts/AuthContext.js';
+import webSocketContext from '../../contexts/WebSocketContext.js';
 import { logChatEvent } from '../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../utils/error-handler.js';
 
 class UserStatus {
   constructor(container, options = {}) {
@@ -15,6 +16,8 @@ class UserStatus {
     
     this.statusElement = null;
     this.statusMenuOpen = false;
+    this.connectionSubscription = null;
+    this.connectionStatus = 'disconnected';
     
     // Status options
     this.statusOptions = [
@@ -32,6 +35,7 @@ class UserStatus {
     this.toggleStatusMenu = this.toggleStatusMenu.bind(this);
     this.handleStatusSelect = this.handleStatusSelect.bind(this);
     this.handleClickOutside = this.handleClickOutside.bind(this);
+    this.handleConnectionChange = this.handleConnectionChange.bind(this);
     
     // Initialize
     this.initialize();
@@ -55,10 +59,13 @@ class UserStatus {
     }
     
     // Get current user
-    const currentUser = getCurrentUser();
+    const currentUser = authContext.getCurrentUser();
     if (currentUser && currentUser.status) {
       this.currentStatus = currentUser.status;
     }
+    
+    // Subscribe to connection changes
+    this.connectionSubscription = webSocketContext.subscribeToConnection(this.handleConnectionChange);
     
     // Render initial state
     this.render();
@@ -71,6 +78,17 @@ class UserStatus {
   }
   
   /**
+   * Handle connection state changes
+   * @param {Object} connectionState - WebSocket connection state
+   */
+  handleConnectionChange(connectionState) {
+    this.connectionStatus = connectionState.status;
+    
+    // Update render if needed
+    this.render();
+  }
+  
+  /**
    * Render the status component
    */
   render() {
@@ -80,10 +98,10 @@ class UserStatus {
     this.statusElement.innerHTML = '';
     
     // Get current user
-    const currentUser = getCurrentUser();
+    const currentUser = authContext.getCurrentUser();
     
     // If not authenticated, show nothing
-    if (!isAuthenticated() || !currentUser) {
+    if (!authContext.isAuthenticated() || !currentUser) {
       this.statusElement.style.display = 'none';
       return;
     } else {
@@ -140,10 +158,22 @@ class UserStatus {
     // Add click event listener to toggle menu
     statusButton.addEventListener('click', this.toggleStatusMenu);
     
+    // Disable button if not connected
+    if (this.connectionStatus !== 'connected') {
+      statusButton.disabled = true;
+      this.applyStyles(statusButton, {
+        opacity: '0.6',
+        cursor: 'not-allowed'
+      });
+      
+      // Add a tooltip explaining why it's disabled
+      statusButton.title = 'Status cannot be changed while offline';
+    }
+    
     this.statusElement.appendChild(statusButton);
     
     // Create status menu (dropdown)
-    if (this.statusMenuOpen) {
+    if (this.statusMenuOpen && this.connectionStatus === 'connected') {
       const statusMenu = document.createElement('div');
       statusMenu.className = 'status-menu';
       this.applyStyles(statusMenu, {
@@ -217,29 +247,51 @@ class UserStatus {
    */
   toggleStatusMenu(e) {
     e.stopPropagation();
-    this.statusMenuOpen = !this.statusMenuOpen;
-    this.render();
+    
+    // Only toggle if we're connected
+    if (this.connectionStatus === 'connected') {
+      this.statusMenuOpen = !this.statusMenuOpen;
+      this.render();
+    }
   }
   
   /**
    * Handle status selection
    * @param {string} status - Selected status
    */
-  handleStatusSelect(status) {
-    // Update current status
-    this.currentStatus = status;
-    
-    // Close the menu
-    this.statusMenuOpen = false;
-    
-    // Update UI
-    this.render();
-    
-    // Send status update to server
-    setUserStatus(status);
-    
-    // Log status change
-    logChatEvent('ui', 'User status changed', { status });
+  async handleStatusSelect(status) {
+    try {
+      // Update current status
+      this.currentStatus = status;
+      
+      // Close the menu
+      this.statusMenuOpen = false;
+      
+      // Update UI
+      this.render();
+      
+      // Send status update to server
+      const success = await webSocketContext.updateUserStatus(status);
+      
+      if (!success) {
+        throw new Error('Failed to update status');
+      }
+      
+      // Log status change
+      logChatEvent('ui', 'User status changed', { status });
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.API_REQUEST_FAILED,
+        category: ErrorCategory.NETWORK,
+        source: 'UserStatus',
+        message: 'Failed to update status'
+      });
+      
+      // Revert to previous status on error
+      const currentUser = authContext.getCurrentUser();
+      this.currentStatus = currentUser?.status || 'online';
+      this.render();
+    }
   }
   
   /**
@@ -279,6 +331,12 @@ class UserStatus {
   destroy() {
     // Remove event listeners
     document.removeEventListener('click', this.handleClickOutside);
+    
+    // Remove subscription
+    if (this.connectionSubscription) {
+      this.connectionSubscription();
+      this.connectionSubscription = null;
+    }
     
     // Remove from DOM
     if (this.statusElement && this.statusElement.parentNode) {

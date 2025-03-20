@@ -1,9 +1,12 @@
 // chat/components/users/UserList.js
 // User list component for HIPAA-compliant chat
 
-import { getOnlineUsers, getAllUsers, addUserStatusListener } from '../../services/userService.js';
-import { getCurrentUser, isAuthenticated } from '../../services/auth';
+import authContext from '../../contexts/AuthContext.js';
+import webSocketContext from '../../contexts/WebSocketContext.js';
+import userService from '../../services/api/users.js';
 import { logChatEvent } from '../../utils/logger.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../utils/error-handler.js';
+import { createCache } from '../../utils/cache.js';
 
 class UserList {
   constructor(container, options = {}) {
@@ -23,8 +26,20 @@ class UserList {
     this.allUsers = [];
     this.searchTerm = '';
     
-    // Status listener unsubscribe function
-    this.unsubscribeStatusListener = null;
+    // Create user status cache
+    this.userStatusCache = createCache('userList_statuses', {
+      maxItems: 100,
+      ttl: 5 * 60 * 1000 // 5 minutes
+    });
+    
+    // Subscription for user status updates
+    this.userSubscription = null;
+    
+    // Subscription for connection status
+    this.connectionSubscription = null;
+    
+    // Track connection status
+    this.connectionStatus = 'disconnected';
     
     // Bind methods
     this.render = this.render.bind(this);
@@ -32,6 +47,7 @@ class UserList {
     this.handleUserClick = this.handleUserClick.bind(this);
     this.handleSearch = this.handleSearch.bind(this);
     this.filterUsers = this.filterUsers.bind(this);
+    this.handleConnectionChange = this.handleConnectionChange.bind(this);
     
     // Initialize
     this.initialize();
@@ -59,15 +75,14 @@ class UserList {
       this.container.appendChild(this.userListElement);
     }
     
-    // Get initial user lists
-    this.onlineUsers = getOnlineUsers();
+    // Subscribe to user status updates through WebSocketContext
+    this.userSubscription = webSocketContext.subscribeToUsers(this.handleUserStatusUpdate);
     
-    if (this.options.showOfflineUsers) {
-      this.allUsers = getAllUsers();
-    }
+    // Subscribe to connection status changes
+    this.connectionSubscription = webSocketContext.subscribeToConnection(this.handleConnectionChange);
     
-    // Subscribe to user status updates
-    this.unsubscribeStatusListener = addUserStatusListener(this.handleUserStatusUpdate);
+    // Load initial user lists
+    this.loadUsers();
     
     // Render initial state
     this.render();
@@ -77,15 +92,79 @@ class UserList {
   }
   
   /**
+   * Handle connection status changes
+   * @param {Object} connectionState - WebSocket connection state
+   */
+  handleConnectionChange(connectionState) {
+    const prevStatus = this.connectionStatus;
+    this.connectionStatus = connectionState.status;
+    
+    // If we've reconnected, reload users
+    if (prevStatus !== 'connected' && connectionState.status === 'connected') {
+      this.loadUsers();
+    }
+    
+    // Update UI if needed
+    this.render();
+  }
+  
+  /**
+   * Load users from service
+   */
+  async loadUsers() {
+    try {
+      // Don't load if not connected
+      if (this.connectionStatus !== 'connected') {
+        return;
+      }
+      
+      // Get online users
+      this.onlineUsers = userService.getOnlineUsers();
+      
+      // If showing offline users, load all users
+      if (this.options.showOfflineUsers) {
+        const result = await userService.getAllUsers();
+        if (result.success) {
+          this.allUsers = result.data.users || [];
+        } else {
+          this.allUsers = [];
+          console.warn('[UserList] Failed to load all users:', result.message);
+        }
+      }
+      
+      // Request user list refresh from server
+      webSocketContext.fetchUserList(this.options.showOfflineUsers);
+      
+      // Render with new data
+      this.render();
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.DATA_NOT_FOUND,
+        category: ErrorCategory.DATA,
+        source: 'UserList',
+        message: 'Failed to load users'
+      });
+    }
+  }
+  
+  /**
    * Handle user status updates
    * @param {Array} users - Updated online users
    */
   handleUserStatusUpdate(users) {
-    this.onlineUsers = users;
+    this.onlineUsers = users || [];
+    
+    // Update status cache for users
+    users.forEach(user => {
+      this.userStatusCache.set(user.id, user.status || 'online');
+    });
     
     // Also update all users if showing offline users
     if (this.options.showOfflineUsers) {
-      this.allUsers = getAllUsers();
+      // Request all users if we don't have them yet
+      if (this.allUsers.length === 0) {
+        this.loadUsers();
+      }
     }
     
     // Re-render the list
@@ -135,8 +214,72 @@ class UserList {
       fontWeight: 'bold'
     });
     
+    // Add connection status indicator
+    const statusIndicator = document.createElement('div');
+    statusIndicator.className = 'connection-status';
+    
+    // Style based on connection status
+    let statusColor = '#f44336'; // Red for disconnected
+    let statusText = 'Offline';
+    
+    if (this.connectionStatus === 'connected') {
+      statusColor = '#4CAF50'; // Green for connected
+      statusText = 'Online';
+    } else if (this.connectionStatus === 'connecting') {
+      statusColor = '#FF9800'; // Orange for connecting
+      statusText = 'Connecting...';
+    }
+    
+    this.applyStyles(statusIndicator, {
+      display: 'flex',
+      alignItems: 'center',
+      fontSize: '12px',
+      color: '#666',
+      marginRight: '10px'
+    });
+    
+    const statusDot = document.createElement('span');
+    this.applyStyles(statusDot, {
+      width: '8px',
+      height: '8px',
+      borderRadius: '50%',
+      backgroundColor: statusColor,
+      marginRight: '4px'
+    });
+    
+    statusIndicator.appendChild(statusDot);
+    statusIndicator.appendChild(document.createTextNode(statusText));
+    
+    // Create header controls container
+    const headerControls = document.createElement('div');
+    this.applyStyles(headerControls, {
+      display: 'flex',
+      alignItems: 'center'
+    });
+    
+    // Add refresh button
+    const refreshButton = document.createElement('button');
+    refreshButton.className = 'refresh-button';
+    refreshButton.innerHTML = '↻';
+    refreshButton.title = 'Refresh Users';
+    this.applyStyles(refreshButton, {
+      background: 'none',
+      border: 'none',
+      fontSize: '18px',
+      cursor: 'pointer',
+      color: '#666',
+      marginRight: '8px'
+    });
+    
+    refreshButton.addEventListener('click', () => this.loadUsers());
+    
+    headerControls.appendChild(statusIndicator);
+    headerControls.appendChild(refreshButton);
+    headerControls.appendChild(countBadge);
+    
     header.appendChild(headerTitle);
-    header.appendChild(countBadge);
+    header.appendChild(headerControls);
+    
     this.userListElement.appendChild(header);
     
     // Search box if enabled
@@ -176,6 +319,44 @@ class UserList {
       overflowY: 'auto',
       padding: '8px 0'
     });
+    
+    // Show disconnected message if not connected
+    if (this.connectionStatus !== 'connected') {
+      const disconnectedMessage = document.createElement('div');
+      disconnectedMessage.className = 'disconnected-message';
+      this.applyStyles(disconnectedMessage, {
+        padding: '16px',
+        textAlign: 'center',
+        color: '#666',
+        fontStyle: 'italic'
+      });
+      
+      if (this.connectionStatus === 'connecting') {
+        disconnectedMessage.textContent = 'Connecting to server...';
+      } else {
+        disconnectedMessage.textContent = 'Disconnected from server. Reconnecting...';
+      }
+      
+      userContainer.appendChild(disconnectedMessage);
+      
+      // If we have cached users, still show them but with an indicator
+      if (this.onlineUsers.length > 0) {
+        const cachedNotice = document.createElement('div');
+        cachedNotice.className = 'cached-notice';
+        this.applyStyles(cachedNotice, {
+          padding: '8px 16px',
+          fontSize: '12px',
+          color: '#666',
+          fontStyle: 'italic',
+          backgroundColor: '#fff3e0',
+          margin: '8px 0',
+          textAlign: 'center'
+        });
+        
+        cachedNotice.textContent = 'Showing cached user data';
+        userContainer.appendChild(cachedNotice);
+      }
+    }
     
     // Filter and sort users
     const usersToDisplay = this.filterUsers();
@@ -217,7 +398,7 @@ class UserList {
     const totalUsers = onlineUsersToDisplay.length + 
                       (this.options.showOfflineUsers ? offlineUsersToDisplay.length : 0);
                       
-    if (totalUsers === 0) {
+    if (totalUsers === 0 && this.connectionStatus === 'connected') {
       const emptyState = document.createElement('div');
       emptyState.className = 'empty-state';
       this.applyStyles(emptyState, {
@@ -300,7 +481,7 @@ class UserList {
    * @returns {HTMLElement} User item element
    */
   createUserItem(user, isOnline) {
-    const currentUser = getCurrentUser();
+    const currentUser = authContext.getCurrentUser();
     const isSelf = currentUser && user.id === currentUser.id;
     
     const item = document.createElement('div');
@@ -315,14 +496,44 @@ class UserList {
       opacity: isOnline ? '1' : '0.6'
     });
     
+    // Add hover effect
+    item.addEventListener('mouseover', () => {
+      item.style.backgroundColor = '#e9ecef';
+    });
+    
+    item.addEventListener('mouseout', () => {
+      item.style.backgroundColor = '';
+    });
+    
+    // Get user status
+    const userStatus = isOnline ? (user.status || 'online') : 'offline';
+    
     // Status indicator
     const statusIndicator = document.createElement('div');
     statusIndicator.className = 'status-indicator';
+    
+    // Set color based on status
+    let statusColor;
+    switch (userStatus) {
+      case 'online':
+        statusColor = '#4CAF50'; // Green
+        break;
+      case 'away':
+        statusColor = '#FF9800'; // Orange
+        break;
+      case 'busy':
+        statusColor = '#f44336'; // Red
+        break;
+      case 'offline':
+      default:
+        statusColor = '#9e9e9e'; // Grey
+    }
+    
     this.applyStyles(statusIndicator, {
       width: '8px',
       height: '8px',
       borderRadius: '50%',
-      backgroundColor: isOnline ? '#4CAF50' : '#9e9e9e',
+      backgroundColor: statusColor,
       marginRight: '8px'
     });
     
@@ -422,10 +633,14 @@ class UserList {
     }
     
     // Add user status if available and enabled
-    if (this.options.showUserStatus && user.status) {
+    if (this.options.showUserStatus && userStatus) {
       const statusText = document.createElement('div');
       statusText.className = 'status-text';
-      statusText.textContent = user.status;
+      
+      // Capitalize first letter
+      const formattedStatus = userStatus.charAt(0).toUpperCase() + userStatus.slice(1);
+      statusText.textContent = formattedStatus;
+      
       this.applyStyles(statusText, {
         fontSize: '12px',
         color: '#666',
@@ -521,18 +736,52 @@ class UserList {
   }
   
   /**
+   * Toggle showing offline users
+   * @param {boolean} show - Whether to show offline users
+   */
+  toggleOfflineUsers(show) {
+    if (this.options.showOfflineUsers !== show) {
+      this.options.showOfflineUsers = show;
+      
+      // Load all users if needed
+      if (show && this.allUsers.length === 0) {
+        this.loadUsers();
+      } else {
+        this.render();
+      }
+    }
+  }
+  
+  /**
+   * Refresh user list
+   */
+  refresh() {
+    this.loadUsers();
+  }
+  
+  /**
    * Cleanup resources
    */
   destroy() {
-    // Unsubscribe from user status updates
-    if (this.unsubscribeStatusListener) {
-      this.unsubscribeStatusListener();
-      this.unsubscribeStatusListener = null;
+    // Remove WebSocket subscriptions
+    if (this.userSubscription) {
+      this.userSubscription();
+      this.userSubscription = null;
+    }
+    
+    if (this.connectionSubscription) {
+      this.connectionSubscription();
+      this.connectionSubscription = null;
     }
     
     // Remove event listeners
     if (this.searchInput) {
       this.searchInput.removeEventListener('input', this.handleSearch);
+    }
+    
+    // Destroy user cache
+    if (this.userStatusCache) {
+      this.userStatusCache.destroy();
     }
     
     // Remove from DOM

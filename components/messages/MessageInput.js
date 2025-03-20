@@ -1,10 +1,13 @@
 // chat/components/messages/MessageInput.js
 // Message input component for HIPAA-compliant chat
 
-import { sendChatMessage } from '../../services/messageService.js';
-import { isAuthenticated, hasPermission } from '../../services/auth';
 import { logChatEvent } from '../../utils/logger.js';
 import { validateMessage, containsPotentialPHI } from '../../utils/validation.js';
+import authContext from '../../contexts/AuthContext.js';
+import webSocketContext from '../../contexts/WebSocketContext.js';
+import encryptionContext from '../../contexts/EncryptionContext.js';
+import messageService from '../../services/api/messages.js';
+import { handleError, ErrorCategory, ErrorCode } from '../../utils/error-handler.js';
 
 class MessageInput {
   constructor(container, options = {}) {
@@ -26,6 +29,10 @@ class MessageInput {
     this.characterCountElement = null;
     this.phiWarningElement = null;
     
+    // Track typing state
+    this.isTyping = false;
+    this.typingTimeout = null;
+    
     // Bind methods
     this.render = this.render.bind(this);
     this.handleInput = this.handleInput.bind(this);
@@ -33,6 +40,7 @@ class MessageInput {
     this.handleSendClick = this.handleSendClick.bind(this);
     this.sendMessage = this.sendMessage.bind(this);
     this.checkPHI = this.checkPHI.bind(this);
+    this.handleTypingState = this.handleTypingState.bind(this);
     
     // Initialize
     this.initialize();
@@ -80,7 +88,7 @@ class MessageInput {
     this.inputContainerElement.innerHTML = '';
     
     // Check if user can send messages
-    const canSendMessages = isAuthenticated() && hasPermission('message.create');
+    const canSendMessages = authContext.isAuthenticated() && authContext.hasPermission('message.create');
     
     if (canSendMessages) {
       // Create input row
@@ -192,7 +200,7 @@ class MessageInput {
         textAlign: 'center'
       });
       
-      if (!isAuthenticated()) {
+      if (!authContext.isAuthenticated()) {
         readonlyNotice.textContent = 'You must be logged in to send messages';
       } else {
         readonlyNotice.textContent = 'You do not have permission to send messages';
@@ -255,6 +263,42 @@ class MessageInput {
     
     // Auto-resize textarea
     this.autoResizeTextarea();
+    
+    // Handle typing indicators
+    this.handleTypingState(text.length > 0);
+  }
+  
+  /**
+   * Handle typing state changes and send typing indicators
+   * @param {boolean} isTypingNow - Whether user is currently typing
+   */
+  handleTypingState(isTypingNow) {
+    // Clear existing timeout
+    if (this.typingTimeout) {
+      clearTimeout(this.typingTimeout);
+      this.typingTimeout = null;
+    }
+    
+    // If typing state changed, send update
+    if (isTypingNow !== this.isTyping) {
+      this.isTyping = isTypingNow;
+      
+      // Send typing indicator via WebSocket
+      if (webSocketContext.getConnectionState().status === 'connected') {
+        webSocketContext.sendTypingIndicator(
+          this.options.channelId,
+          this.options.userId,
+          this.isTyping
+        );
+      }
+    }
+    
+    // If currently typing, set timeout to clear state
+    if (this.isTyping) {
+      this.typingTimeout = setTimeout(() => {
+        this.handleTypingState(false);
+      }, 5000); // Stop typing indicator after 5 seconds of inactivity
+    }
   }
   
   /**
@@ -264,7 +308,14 @@ class MessageInput {
   checkPHI(text) {
     if (!this.phiWarningElement || !this.options.showPHIWarning) return;
     
-    if (containsPotentialPHI(text)) {
+    // First use local validation
+    const localCheck = containsPotentialPHI(text);
+    
+    // Then use encryption context for a potentially more sophisticated check
+    const contextCheck = encryptionContext.mayContainPHI(text);
+    
+    // Show warning if either check detects PHI
+    if (localCheck || contextCheck) {
       this.phiWarningElement.style.display = 'block';
     } else {
       this.phiWarningElement.style.display = 'none';
@@ -311,62 +362,116 @@ class MessageInput {
   /**
    * Send the message
    */
-  sendMessage() {
+  async sendMessage() {
     if (!this.textareaElement) return;
     
     const text = this.textareaElement.value.trim();
     if (!text) return;
     
-    // Validate message
-    const validationResult = validateMessage(text);
-    if (!validationResult.success) {
-      // Show error message
-      alert(validationResult.error);
-      return;
+    try {
+      // Validate message
+      const validationResult = validateMessage(text);
+      if (!validationResult.success) {
+        // Show error message
+        alert(validationResult.error);
+        return;
+      }
+      
+      // Get current user
+      const currentUser = authContext.getCurrentUser();
+      if (!currentUser) {
+        handleError(new Error('Not authenticated'), {
+          code: ErrorCode.AUTH_FAILED,
+          category: ErrorCategory.AUTHENTICATION,
+          source: 'MessageInput'
+        });
+        return;
+      }
+      
+      // Create message object
+      const messageObject = {
+        text,
+        sender: currentUser.id,
+        timestamp: new Date().toISOString(),
+        type: 'chat',
+        containsPHI: validationResult.containsPHI
+      };
+      
+      // Add channel or recipient information
+      if (this.options.channelId) {
+        messageObject.channel = this.options.channelId;
+      } else if (this.options.userId) {
+        messageObject.recipient = this.options.userId;
+      } else {
+        handleError(new Error('No channel ID or user ID specified'), {
+          code: ErrorCode.INVALID_INPUT,
+          category: ErrorCategory.VALIDATION,
+          source: 'MessageInput'
+        });
+        return;
+      }
+      
+      // Encrypt if enabled
+      let processedMessage = messageObject;
+      if (encryptionContext.getEncryptionState().active) {
+        processedMessage = await encryptionContext.encrypt(messageObject);
+      }
+      
+      // Send message
+      const result = await messageService.sendChatMessage(
+        processedMessage.text,
+        this.options.channelId,
+        this.options.userId
+      );
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to send message');
+      }
+      
+      // Clear input
+      this.textareaElement.value = '';
+      
+      // Reset UI
+      if (this.characterCountElement) {
+        this.characterCountElement.textContent = `0/${this.options.maxLength}`;
+        this.characterCountElement.style.color = '#666';
+      }
+      
+      if (this.phiWarningElement) {
+        this.phiWarningElement.style.display = 'none';
+      }
+      
+      if (this.sendButtonElement) {
+        this.sendButtonElement.disabled = true;
+        this.sendButtonElement.style.opacity = '0.7';
+      }
+      
+      // Reset typing state
+      this.handleTypingState(false);
+      
+      // Resize textarea
+      this.autoResizeTextarea();
+      
+      // Focus textarea
+      this.textareaElement.focus();
+      
+      // Log message sent
+      logChatEvent('ui', 'Message sent', {
+        channelId: this.options.channelId,
+        userId: this.options.userId,
+        containsPHI: validationResult.containsPHI
+      });
+    } catch (error) {
+      handleError(error, {
+        code: ErrorCode.UNEXPECTED_ERROR,
+        category: ErrorCategory.SYSTEM,
+        source: 'MessageInput',
+        message: 'Failed to send message'
+      });
+      
+      // Show error to user
+      alert('Failed to send message. Please try again.');
     }
-    
-    // Determine where to send the message
-    if (this.options.channelId) {
-      // Send to channel
-      sendChatMessage(text, this.options.channelId);
-    } else if (this.options.userId) {
-      // Send as direct message
-      sendChatMessage(text, null, this.options.userId);
-    } else {
-      console.error('[CRM Extension] Cannot send message: no channel ID or user ID specified');
-      return;
-    }
-    
-    // Clear input
-    this.textareaElement.value = '';
-    
-    // Reset UI
-    if (this.characterCountElement) {
-      this.characterCountElement.textContent = `0/${this.options.maxLength}`;
-      this.characterCountElement.style.color = '#666';
-    }
-    
-    if (this.phiWarningElement) {
-      this.phiWarningElement.style.display = 'none';
-    }
-    
-    if (this.sendButtonElement) {
-      this.sendButtonElement.disabled = true;
-      this.sendButtonElement.style.opacity = '0.7';
-    }
-    
-    // Resize textarea
-    this.autoResizeTextarea();
-    
-    // Focus textarea
-    this.textareaElement.focus();
-    
-    // Log message sent
-    logChatEvent('ui', 'Message sent', {
-      channelId: this.options.channelId,
-      userId: this.options.userId,
-      containsPHI: validationResult.containsPHI
-    });
   }
   
   /**
@@ -418,6 +523,21 @@ class MessageInput {
     
     if (this.sendButtonElement) {
       this.sendButtonElement.removeEventListener('click', this.handleSendClick);
+    }
+    
+    // Clear typing timeout
+    if (this.typingTimeout) {
+      clearTimeout(this.typingTimeout);
+      this.typingTimeout = null;
+    }
+    
+    // Send typing stopped if needed
+    if (this.isTyping) {
+      webSocketContext.sendTypingIndicator(
+        this.options.channelId,
+        this.options.userId,
+        false
+      );
     }
     
     // Remove from DOM

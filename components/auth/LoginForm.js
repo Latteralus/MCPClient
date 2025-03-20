@@ -1,7 +1,7 @@
-// chat/components/auth/LoginForm.js
+// components/auth/LoginForm.js
 // Login form component for HIPAA-compliant chat
 
-import { login } from '../../services/auth';
+import authContext from '../../contexts/AuthContext.js';
 import { logChatEvent } from '../../utils/logger.js';
 
 // Header bar colors
@@ -36,10 +36,13 @@ class LoginForm {
     this.usernameInput = null;
     this.passwordInput = null;
     this.submitButton = null;
+    this.errorElement = null;
+    this.demoLoginButton = null;
     
     // Bind methods
     this.render = this.render.bind(this);
     this.handleSubmit = this.handleSubmit.bind(this);
+    this.handleDemoLogin = this.handleDemoLogin.bind(this);
     
     // Initialize component
     this.render();
@@ -93,6 +96,19 @@ class LoginForm {
     
     // Add submit event listener
     this.formElement.addEventListener('submit', this.handleSubmit);
+    
+    // Error message element (hidden initially)
+    this.errorElement = document.createElement('div');
+    this.errorElement.className = 'login-error';
+    this.applyStyles(this.errorElement, {
+      color: '#f44336',
+      backgroundColor: '#ffebee',
+      padding: '10px',
+      borderRadius: '4px',
+      marginBottom: '16px',
+      fontSize: '14px',
+      display: 'none'
+    });
     
     // Username field
     const usernameGroup = this.createFormGroup('Username', 'username', 'text');
@@ -152,6 +168,33 @@ class LoginForm {
       this.submitButton.style.backgroundColor = HEADER_COLORS.primary;
     });
     
+    // Demo login button
+    this.demoLoginButton = document.createElement('button');
+    this.demoLoginButton.type = 'button';
+    this.demoLoginButton.textContent = 'Demo Login';
+    this.applyStyles(this.demoLoginButton, {
+      backgroundColor: 'transparent',
+      color: HEADER_COLORS.accent,
+      border: `1px solid ${HEADER_COLORS.accent}`,
+      padding: '10px',
+      borderRadius: '4px',
+      fontSize: '14px',
+      cursor: 'pointer',
+      marginTop: '10px',
+      width: '100%'
+    });
+    
+    // Add hover effect for demo button
+    this.demoLoginButton.addEventListener('mouseover', () => {
+      this.demoLoginButton.style.backgroundColor = `${HEADER_COLORS.accent}10`;
+    });
+    this.demoLoginButton.addEventListener('mouseout', () => {
+      this.demoLoginButton.style.backgroundColor = 'transparent';
+    });
+    
+    // Add click event listener
+    this.demoLoginButton.addEventListener('click', this.handleDemoLogin);
+    
     // Compliance text
     const complianceText = document.createElement('p');
     complianceText.textContent = 'This system complies with HIPAA security requirements';
@@ -171,10 +214,12 @@ class LoginForm {
     });
     
     // Add all elements to form
+    this.formElement.appendChild(this.errorElement);
     this.formElement.appendChild(usernameGroup);
     this.formElement.appendChild(passwordGroup);
     this.formElement.appendChild(rememberGroup);
     this.formElement.appendChild(this.submitButton);
+    this.formElement.appendChild(this.demoLoginButton);
     
     // Add form to container
     loginContainer.appendChild(title);
@@ -245,7 +290,7 @@ class LoginForm {
         border: 'none',
         cursor: 'pointer',
         fontSize: '16px',
-        color: '#f44336'
+        color: '#666'
       });
       
       toggleButton.addEventListener('click', () => {
@@ -274,14 +319,18 @@ class LoginForm {
       const password = this.passwordInput.value;
       const remember = event.target.remember?.checked || false;
       
+      // Hide error message
+      this.hideError();
+      
       // Disable form fields and button during login
       this.submitButton.disabled = true;
       this.submitButton.textContent = 'Logging in...';
       this.usernameInput.disabled = true;
       this.passwordInput.disabled = true;
+      this.demoLoginButton.disabled = true;
       
-      // Attempt login
-      const loginResult = await login(username, password);
+      // Attempt login through auth context
+      const loginResult = await authContext.login(username, password);
       
       if (loginResult.success) {
         // Log successful login attempt
@@ -291,26 +340,107 @@ class LoginForm {
         this.onLoginSuccess(loginResult.user);
       } else {
         // Show error message
-        alert(loginResult.error || 'Login failed. Please try again.');
+        this.showError(loginResult.error || 'Login failed. Please try again.');
         
         // Re-enable form
         this.submitButton.disabled = false;
         this.submitButton.textContent = 'Login';
         this.usernameInput.disabled = false;
         this.passwordInput.disabled = false;
+        this.demoLoginButton.disabled = false;
       }
     } catch (error) {
-      console.error('[CRM Extension] Login error:', error);
+      console.error('[LoginForm] Login error:', error);
       
       // Show generic error message
-      alert('An unexpected error occurred. Please try again.');
+      this.showError('An unexpected error occurred. Please try again.');
       
       // Re-enable form
       this.submitButton.disabled = false;
       this.submitButton.textContent = 'Login';
       this.usernameInput.disabled = false;
       this.passwordInput.disabled = false;
+      this.demoLoginButton.disabled = false;
     }
+  }
+  
+  /**
+   * Handle demo login
+   */
+  async handleDemoLogin() {
+    try {
+      // Disable form fields and button during login
+      this.submitButton.disabled = true;
+      this.demoLoginButton.disabled = true;
+      this.demoLoginButton.textContent = 'Logging in...';
+      this.usernameInput.disabled = true;
+      this.passwordInput.disabled = true;
+      
+      // Hide error message
+      this.hideError();
+      
+      // Use demo credentials
+      const demoUsername = 'demouser';
+      const demoPassword = 'demopassword';
+      
+      // Fill in form fields for visual feedback
+      this.usernameInput.value = demoUsername;
+      this.passwordInput.value = demoPassword;
+      
+      // Attempt login through auth context
+      const loginResult = await authContext.login(demoUsername, demoPassword);
+      
+      if (loginResult.success) {
+        // Log successful demo login
+        logChatEvent('auth', 'Demo login successful');
+        
+        // Call login success callback
+        this.onLoginSuccess(loginResult.user);
+      } else {
+        // Show error message
+        this.showError(loginResult.error || 'Demo login failed. Please try again.');
+        
+        // Re-enable form
+        this.submitButton.disabled = false;
+        this.demoLoginButton.disabled = false;
+        this.demoLoginButton.textContent = 'Demo Login';
+        this.usernameInput.disabled = false;
+        this.passwordInput.disabled = false;
+      }
+    } catch (error) {
+      console.error('[LoginForm] Demo login error:', error);
+      
+      // Show generic error message
+      this.showError('An unexpected error occurred. Please try again.');
+      
+      // Re-enable form
+      this.submitButton.disabled = false;
+      this.demoLoginButton.disabled = false;
+      this.demoLoginButton.textContent = 'Demo Login';
+      this.usernameInput.disabled = false;
+      this.passwordInput.disabled = false;
+    }
+  }
+  
+  /**
+   * Show error message
+   * @param {string} message - Error message to display
+   */
+  showError(message) {
+    if (!this.errorElement) return;
+    
+    this.errorElement.textContent = message;
+    this.errorElement.style.display = 'block';
+  }
+  
+  /**
+   * Hide error message
+   */
+  hideError() {
+    if (!this.errorElement) return;
+    
+    this.errorElement.textContent = '';
+    this.errorElement.style.display = 'none';
   }
   
   /**
@@ -330,9 +460,15 @@ class LoginForm {
       this.formElement.removeEventListener('submit', this.handleSubmit);
     }
     
+    if (this.demoLoginButton) {
+      this.demoLoginButton.removeEventListener('click', this.handleDemoLogin);
+    }
+    
     if (this.container) {
       this.container.innerHTML = '';
     }
+    
+    logChatEvent('ui', 'Login form component destroyed');
   }
 }
 
